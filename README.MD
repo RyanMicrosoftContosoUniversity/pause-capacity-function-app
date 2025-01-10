@@ -39,7 +39,7 @@ Follow the steps at this other github page: https://github.com/RyanMicrosoftCont
 
 Creation of a new function app via VS Code (note, this can be created and updated in the Azure Portal as well)
 
-![Alt text](docs\Capacity_App\requirements-txt-file.png)
+![Alt text](docs/Capacity_App/requirements-txt-file.png)
 
 
 Ensure that the Azure extension is installed from the VS Code Marketplace
