@@ -46,57 +46,24 @@ Ensure that the Azure extension is installed from the VS Code Marketplace
 
 To create a new function app, first navigate to the command pallette
 
-![Alt text](docs\Capacity_App\command-palette.png)
+![Alt text](docs/Capacity_App/command-palette.png)
 
 
 Create a new project for Azure Functions
-![Alt text](docs\Capacity_App\create-new-project.png)
+![Alt text](docs/Capacity_App/create-new-project.png)
 
 
 Add code to function app
-![Alt text](docs\Capacity_App\timer-trigger-code.png)
+![Alt text](docs/Capacity_App/timer-trigger-code.png)
 
 Use a similar flow with the command pallette to publish app to Azure
 
 Add Environment Variables for the app
-![Alt text](docs\Capacity_App\environment-variables.png)
+![Alt text](docs/Capacity_App/environment-variables.png)
 
-![Alt text](docs\Capacity_App\add-environment-variables.png)
+![Alt text](docs/Capacity_App/add-environment-variables.png)
 
 
 Test the app
-![Alt text](docs\Capacity_App\test-app.png)
+![Alt text](docs/Capacity_App/test-app.png)
 
-
-
-
-
-
-
-
-
-
-
-Access the POC Code:
-
-    1. Navigate to fabric-automation-framework - Repos (azure.com)
-    2. Clone the code in local git
-
-![Alt text](docs\images\POC_11.png)
-
-    3. Pip install the poc code:
-
-![Alt text](docs\images\POC_12.png)
-
-    4. Adjust the configuration file: docs\non-prod-spn-config.json to reflect your resources
-
-![Alt text](docs\images\POC_12.png)
-
-
-To test locally, run the script at: scripts\metadata_scan.py to write the scan files to the local docs folder:
-
-![Alt text](docs\images\POC_13.png)
-
-
-
-To perform ETL on the scan result, see the ipynb file here: scripts\process_metadata_scan.ipynb
