@@ -46,10 +46,18 @@ Ensure that the Azure extension is installed from the VS Code Marketplace
 
 To create a new function app, first navigate to the command pallette
 
+
+
 ![Alt text](docs/Capacity_App/command-palette.png)
 
 
+
+
+
+
 Create a new project for Azure Functions
+
+
 ![Alt text](docs/Capacity_App/create-new-project.png)
 
 
