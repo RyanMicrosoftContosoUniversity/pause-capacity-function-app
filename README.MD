@@ -1,4 +1,4 @@
-# Fabric Automation Framework
+# Fabric Pause Capacity App
 Note that this project is for POC purposes only.  Please see DISCLAIMER.md for more details
 
 
