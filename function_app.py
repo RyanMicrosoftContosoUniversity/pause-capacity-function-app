@@ -3,27 +3,32 @@ import azure.functions as func
 from fabric_automation_utils.service_principal import ServicePrincipal
 from fabric_automation_utils.fabric_capacity import Extract, FabricCapacitiesBySubscription, FabricCapacityMGMT
 import json
+import os
 
 app = func.FunctionApp()
 
 @app.timer_trigger(schedule="0 23 * * * ", arg_name="myTimer", run_on_startup=False,
               use_monitor=False) 
 def timer_trigger(myTimer: func.TimerRequest) -> None:
-    config_data = json.loads(open('docs/non-prod-spn-config.json').read())
+
+    # print information
+    print(f'client_id: {os.getenv("AZURE_CLIENT_ID")}')
+    print(f'tenant_id: {os.getenv("AZURE_TENANT_ID")}')
+    print(f'spn_secret_name: {os.getenv("SPN_SECRET_NAME")}')
+    print(f'vault_url: {os.getenv("VAULT_URL")}')
+    print(f'subscription_id: {os.getenv("SUBSCRIPTION_ID")}')
+
     spn = ServicePrincipal(
-        client_id=config_data['client_id'],
-        tenant_id=config_data['tenant_id'],
-        spn_secret_name=config_data['spn_secret_name'],
-        vault_url=config_data['vault_url']
+        client_id= os.getenv('AZURE_CLIENT_ID'),
+        tenant_id= os.getenv('AZURE_TENANT_ID'),
+        spn_secret_name=os.getenv('SPN_SECRET_NAME'),
+        vault_url=os.getenv('VAULT_URL')
     )
-    subscription_id = '910ebf13-1058-405d-b6cf-eda03e5288d1'
-    rg = 'fabric-rg'
-    cap_name = 'fabricf2testrh'
+    subscription_id = os.getenv('SUBSCRIPTION_ID')
 
-    # client = FabricCapacityMGMT(spn=spn, subscription_id=subscription_id, resource_group=rg, capacity_name=cap_name)
-    client = FabricCapacitiesBySubscription(spn=spn, subscription_id=subscription_id)
+    client = FabricCapacitiesBySubscription(spn=spn, subscription_id=subscription_id, rg_name='fabric-rg')
 
-    caps_list = client.list_capacities_by_subscription()
+    caps_list = client.list_capacities_by_resource_group()
 
     for item in caps_list:
         # create FabricCapacityMGMT so that the capacity can be paused
