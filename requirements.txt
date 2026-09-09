@@ -1,2 +1,4 @@
 azure-functions
+azure-identity
+requests
 git+https://github.com/RyanMicrosoftContosoUniversity/fabric-automation-framework.git@capacity_updates
