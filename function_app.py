@@ -1,22 +1,17 @@
 import logging
 import azure.functions as func
-from fabric_automation_utils.service_principal import ServicePrincipal
-from fabric_automation_utils.fabric_capacity import Extract, FabricCapacitiesBySubscription, FabricCapacityMGMT
-import json
 import os
 
 app = func.FunctionApp()
 
-@app.timer_trigger(schedule="0 23 * * * ", arg_name="myTimer", run_on_startup=False,
+@app.timer_trigger(schedule="0 0 23 * * *", arg_name="myTimer", run_on_startup=True,
               use_monitor=False) 
 def timer_trigger(myTimer: func.TimerRequest) -> None:
-
-    # print information
-    print(f'client_id: {os.getenv("AZURE_CLIENT_ID")}')
-    print(f'tenant_id: {os.getenv("AZURE_TENANT_ID")}')
-    print(f'spn_secret_name: {os.getenv("SPN_SECRET_NAME")}')
-    print(f'vault_url: {os.getenv("VAULT_URL")}')
-    print(f'subscription_id: {os.getenv("SUBSCRIPTION_ID")}')
+    # Import inside the function to avoid import errors during worker initialization
+    from fabric_utils.service_principal import ServicePrincipal
+    from fabric_utils.fabric_capacity import Extract, FabricCapacitiesBySubscription, FabricCapacityMGMT
+    
+    logging.info('Python timer trigger function started.')
 
     spn = ServicePrincipal(
         client_id= os.getenv('AZURE_CLIENT_ID'),
@@ -42,8 +37,6 @@ def timer_trigger(myTimer: func.TimerRequest) -> None:
         # get capacity_name
         capacity_name = Extract.extract_capacity(id)
 
-        
-        print(item)
 
         # test values
         print(f'The value for subscription_id is {subscription_id}')

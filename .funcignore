@@ -6,3 +6,7 @@ __queuestorage__
 local.settings.json
 test
 .venv
+docs
+README.MD
+.env
+
