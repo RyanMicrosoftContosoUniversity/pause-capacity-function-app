@@ -158,8 +158,8 @@ def stub_fabric_utils(monkeypatch):
 
 
 def test_build_spn_reads_credentials_from_environment(function_app, stub_fabric_utils, monkeypatch):
-    monkeypatch.setenv("AZURE_CLIENT_ID", "client-id")
-    monkeypatch.setenv("AZURE_TENANT_ID", "tenant-id")
+    monkeypatch.setenv("FABRIC_SPN_CLIENT_ID", "client-id")
+    monkeypatch.setenv("FABRIC_SPN_TENANT_ID", "tenant-id")
     monkeypatch.setenv("SPN_SECRET_NAME", "secret-name")
     monkeypatch.setenv("VAULT_URL", "https://vault.example/")
 
@@ -175,6 +175,36 @@ def test_build_spn_reads_credentials_from_environment(function_app, stub_fabric_
         "spn_secret_name": "secret-name",
         "vault_url": "https://vault.example/",
     }
+
+
+def test_spn_settings_prefer_the_non_reserved_names(function_app, monkeypatch):
+    """Regression guard.
+
+    AZURE_CLIENT_ID is reserved by the Azure Identity SDK. With managed-identity
+    storage, the Functions host reads it and tries to authenticate as a
+    user-assigned identity that does not exist, which kills the host's secret
+    repository entirely -- no host keys, no triggers, and listKeys returns
+    "Encountered an error from host runtime". The app's own credentials must
+    therefore be read from FABRIC_SPN_* first.
+    """
+    monkeypatch.setenv("FABRIC_SPN_CLIENT_ID", "correct")
+    monkeypatch.setenv("AZURE_CLIENT_ID", "reserved-and-wrong")
+
+    assert function_app._spn_setting("FABRIC_SPN_CLIENT_ID", "AZURE_CLIENT_ID") == "correct"
+
+
+def test_spn_settings_fall_back_for_the_unmigrated_prod_app(function_app, monkeypatch):
+    monkeypatch.delenv("FABRIC_SPN_CLIENT_ID", raising=False)
+    monkeypatch.setenv("AZURE_CLIENT_ID", "legacy")
+
+    assert function_app._spn_setting("FABRIC_SPN_CLIENT_ID", "AZURE_CLIENT_ID") == "legacy"
+
+
+def test_spn_settings_returns_none_when_neither_is_set(function_app, monkeypatch):
+    monkeypatch.delenv("FABRIC_SPN_CLIENT_ID", raising=False)
+    monkeypatch.delenv("AZURE_CLIENT_ID", raising=False)
+
+    assert function_app._spn_setting("FABRIC_SPN_CLIENT_ID", "AZURE_CLIENT_ID") is None
 
 
 def test_iter_capacity_clients_is_scoped_to_the_configured_resource_group(
