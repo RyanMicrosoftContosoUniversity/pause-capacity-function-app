@@ -1,0 +1,393 @@
+# Fabric Capacity Pause/Resume Service — CI/CD Pipeline
+# =====================================================
+# Builds, validates and deploys the Flex Consumption Function App that pauses
+# Fabric capacities overnight and resumes them in the morning, plus its
+# supporting infrastructure.
+#
+# Stages:
+#   1. Validate       — ruff, black --check, mypy (warn), pytest + coverage gate
+#   2. DeployTest     — terraform apply to TEST, then integration tests that
+#                       pause and resume a real F2 capacity
+#   3. PauseCapacity  — always() — pauses the test capacity so it costs nothing
+#   4. DeployProd     — manual approval via the 'fabric-prod' environment;
+#                       terraform apply to PROD
+#
+# The test capacity is created by Terraform if absent and never destroyed. It is
+# left paused between runs, so the steady-state cost of the TEST environment is
+# effectively zero.
+#
+# Manual usage:
+#   - `skipInfra=true`    -> code-only redeploy, skips terraform
+#   - `skipIntegration=true` -> skips the live pause/resume tests
+#   - `importProd=true`   -> runs iac/import-prod.ps1 before the prod plan.
+#                            Idempotent; needed only until prod is in state.
+#
+# Prerequisites in Azure DevOps (project: Contoso-University):
+#   - Service connections: `fabric-sc` (TEST), `fabric-sc-prod` (PROD)
+#   - Environment `fabric-prod` with a required approval check
+#   - Variable group providing: KeyVaultNameNonProd, KeyVaultNameProd,
+#     TF_BACKEND_RG, TF_BACKEND_SA, TF_BACKEND_CONTAINER, FunctionSpnClientId,
+#     FunctionSpnObjectId
+
+trigger:
+  branches:
+    include:
+      - main
+      - develop
+      - release/*
+      - feature/*
+  paths:
+    include:
+      - src/**
+      - iac/**
+      - tests/**
+      - .cicd/fabric-pause-capacity-app-cicd.yml
+
+pr:
+  branches:
+    include:
+      - main
+      - develop
+  paths:
+    include:
+      - src/**
+      - iac/**
+      - tests/**
+
+parameters:
+  - name: skipInfra
+    displayName: Skip Terraform stages
+    type: boolean
+    default: false
+  - name: skipIntegration
+    displayName: Skip live pause/resume integration tests
+    type: boolean
+    default: false
+  - name: importProd
+    displayName: Import existing prod resources into Terraform state
+    type: boolean
+    default: false
+  - name: deployProd
+    displayName: Deploy to PROD after TEST succeeds
+    type: boolean
+    default: false
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+  - group: fabric-automation
+  - name: pythonVersion
+    value: '3.11'
+  - name: tfRoot
+    value: '$(Build.SourcesDirectory)/iac'
+  - name: funcRoot
+    value: '$(Build.SourcesDirectory)/src/function'
+  - name: terraformVersion
+    value: '1.9.8'
+  - name: subscriptionId
+    value: '910ebf13-1058-405d-b6cf-eda03e5288d1'
+  # Only main and release branches may reach prod, regardless of the parameter.
+  - name: isProdBranch
+    value: $[ or(eq(variables['Build.SourceBranch'], 'refs/heads/main'), startsWith(variables['Build.SourceBranch'], 'refs/heads/release/')) ]
+
+stages:
+
+  # ---------------------------------------------------------------------------
+  - stage: Validate
+    displayName: 'Validate'
+    jobs:
+      - job: Lint
+        displayName: 'Lint, type-check and unit test'
+        steps:
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: '$(pythonVersion)'
+
+          - script: |
+              set -euo pipefail
+              python -m pip install --upgrade pip
+              pip install -r requirements-dev.txt
+              pip install -r src/function/requirements.txt
+            displayName: 'Install dependencies'
+
+          - script: ruff check .
+            displayName: 'ruff'
+
+          - script: black --check .
+            displayName: 'black --check'
+
+          - script: mypy src/function --ignore-missing-imports
+            displayName: 'mypy (advisory)'
+            continueOnError: true
+
+          - script: |
+              set -euo pipefail
+              pytest \
+                --junitxml=$(Build.ArtifactStagingDirectory)/test-results.xml \
+                --cov=src/function \
+                --cov-report=xml:$(Build.ArtifactStagingDirectory)/coverage.xml \
+                --cov-report=term \
+                --cov-fail-under=80
+            displayName: 'pytest (unit) with coverage gate'
+
+          - task: PublishTestResults@2
+            condition: succeededOrFailed()
+            inputs:
+              testResultsFiles: '$(Build.ArtifactStagingDirectory)/test-results.xml'
+              testRunTitle: 'Unit tests'
+
+          - task: PublishCodeCoverageResults@2
+            condition: succeededOrFailed()
+            inputs:
+              summaryFileLocation: '$(Build.ArtifactStagingDirectory)/coverage.xml'
+
+      - job: TerraformValidate
+        displayName: 'Terraform fmt and validate'
+        steps:
+          - task: TerraformInstaller@1
+            inputs:
+              terraformVersion: '$(terraformVersion)'
+
+          - script: terraform fmt -check -recursive
+            workingDirectory: '$(tfRoot)'
+            displayName: 'terraform fmt -check'
+
+          - script: |
+              set -euo pipefail
+              terraform init -backend=false
+              terraform validate
+            workingDirectory: '$(tfRoot)'
+            displayName: 'terraform validate'
+
+  # ---------------------------------------------------------------------------
+  - stage: DeployTest
+    displayName: 'Deploy TEST'
+    dependsOn: Validate
+    condition: and(succeeded(), ne('${{ parameters.skipInfra }}', 'true'))
+    jobs:
+      - job: Apply
+        displayName: 'terraform apply (test)'
+        timeoutInMinutes: 60
+        steps:
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: '$(pythonVersion)'
+
+          - task: TerraformInstaller@1
+            inputs:
+              terraformVersion: '$(terraformVersion)'
+
+          - task: AzureCLI@2
+            displayName: 'terraform apply'
+            inputs:
+              azureSubscription: 'fabric-sc'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              workingDirectory: '$(tfRoot)'
+              # Surface the service connection's credentials to the azurerm
+              # provider and to DefaultAzureCredential in the integration tests.
+              addSpnToEnvironment: true
+              inlineScript: |
+                set -euo pipefail
+                export ARM_CLIENT_ID="$servicePrincipalId"
+                export ARM_CLIENT_SECRET="$servicePrincipalKey"
+                export ARM_TENANT_ID="$tenantId"
+                export ARM_SUBSCRIPTION_ID="$(subscriptionId)"
+
+                terraform init \
+                  -backend-config=backends/test.hcl \
+                  -backend-config="resource_group_name=$(TF_BACKEND_RG)" \
+                  -backend-config="storage_account_name=$(TF_BACKEND_SA)" \
+                  -backend-config="container_name=$(TF_BACKEND_CONTAINER)"
+
+                terraform apply -auto-approve \
+                  -var-file=envs/test.tfvars \
+                  -var="azure_client_id=$(FunctionSpnClientId)" \
+                  -var="function_spn_object_id=$(FunctionSpnObjectId)" \
+                  -var="key_vault_name=$(KeyVaultNameNonProd)"
+
+                terraform output -json > "$(Build.ArtifactStagingDirectory)/tf-output.json"
+
+          - task: AzureCLI@2
+            displayName: 'Integration tests (live pause/resume)'
+            condition: and(succeeded(), ne('${{ parameters.skipIntegration }}', 'true'))
+            inputs:
+              azureSubscription: 'fabric-sc'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              addSpnToEnvironment: true
+              inlineScript: |
+                set -euo pipefail
+                pip install -r requirements-dev.txt -r src/function/requirements.txt
+
+                export AZURE_CLIENT_ID="$servicePrincipalId"
+                export AZURE_CLIENT_SECRET="$servicePrincipalKey"
+                export AZURE_TENANT_ID="$tenantId"
+                export SUBSCRIPTION_ID="$(subscriptionId)"
+
+                OUT="$(Build.ArtifactStagingDirectory)/tf-output.json"
+                export FUNCTION_APP_NAME=$(jq -r '.function_app_name.value' "$OUT")
+                export FUNCTION_APP_RESOURCE_GROUP="test-capacity-pause-app-rg"
+                export TEST_CAPACITY_NAME=$(jq -r '.test_capacity_name.value' "$OUT")
+                export TEST_CAPACITY_RESOURCE_GROUP="test-capacity-pause-app-rg"
+
+                pytest -m integration -v \
+                  --junitxml="$(Build.ArtifactStagingDirectory)/integration-results.xml"
+
+          - task: PublishTestResults@2
+            condition: succeededOrFailed()
+            inputs:
+              testResultsFiles: '$(Build.ArtifactStagingDirectory)/integration-results.xml'
+              testRunTitle: 'Integration tests'
+
+  # ---------------------------------------------------------------------------
+  # Runs even when the tests failed: a failed run is exactly when the capacity
+  # is most likely to have been left Active and billing.
+  - stage: PauseTestCapacity
+    displayName: 'Pause test capacity'
+    dependsOn: DeployTest
+    condition: always()
+    jobs:
+      - job: Pause
+        displayName: 'Pause the F2 so it costs nothing idle'
+        steps:
+          - task: AzureCLI@2
+            inputs:
+              azureSubscription: 'fabric-sc'
+              scriptType: 'pscore'
+              scriptLocation: 'scriptPath'
+              scriptPath: '$(Build.SourcesDirectory)/scripts/pause_test_capacity.ps1'
+              arguments: >-
+                -SubscriptionId $(subscriptionId)
+                -ResourceGroup test-capacity-pause-app-rg
+                -CapacityName fabpausetestcap
+
+  # ---------------------------------------------------------------------------
+  - stage: DeployProd
+    displayName: 'Deploy PROD'
+    dependsOn: DeployTest
+    condition: |
+      and(
+        succeeded(),
+        eq('${{ parameters.deployProd }}', 'true'),
+        eq(variables.isProdBranch, 'True')
+      )
+    jobs:
+      - deployment: ApplyProd
+        displayName: 'terraform apply (prod)'
+        environment: 'fabric-prod'
+        timeoutInMinutes: 60
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+
+                - task: TerraformInstaller@1
+                  inputs:
+                    terraformVersion: '$(terraformVersion)'
+
+                - task: AzureCLI@2
+                  displayName: 'terraform init'
+                  inputs:
+                    azureSubscription: 'fabric-sc-prod'
+                    scriptType: 'bash'
+                    scriptLocation: 'inlineScript'
+                    workingDirectory: '$(tfRoot)'
+                    addSpnToEnvironment: true
+                    inlineScript: |
+                      set -euo pipefail
+                      export ARM_CLIENT_ID="$servicePrincipalId"
+                      export ARM_CLIENT_SECRET="$servicePrincipalKey"
+                      export ARM_TENANT_ID="$tenantId"
+                      export ARM_SUBSCRIPTION_ID="$(subscriptionId)"
+
+                      terraform init \
+                        -backend-config=backends/prod.hcl \
+                        -backend-config="resource_group_name=$(TF_BACKEND_RG)" \
+                        -backend-config="storage_account_name=$(TF_BACKEND_SA)" \
+                        -backend-config="container_name=$(TF_BACKEND_CONTAINER)"
+
+                - task: AzureCLI@2
+                  displayName: 'Import existing prod resources'
+                  condition: eq('${{ parameters.importProd }}', 'true')
+                  inputs:
+                    azureSubscription: 'fabric-sc-prod'
+                    scriptType: 'pscore'
+                    scriptLocation: 'inlineScript'
+                    workingDirectory: '$(tfRoot)'
+                    addSpnToEnvironment: true
+                    inlineScript: |
+                      $env:ARM_CLIENT_ID = "$env:servicePrincipalId"
+                      $env:ARM_CLIENT_SECRET = "$env:servicePrincipalKey"
+                      $env:ARM_TENANT_ID = "$env:tenantId"
+                      $env:ARM_SUBSCRIPTION_ID = "$(subscriptionId)"
+                      ./import-prod.ps1 -SubscriptionId "$(subscriptionId)"
+
+                # Plan is published as an artifact and applied from that exact
+                # file, so the approver's review and the apply cannot diverge.
+                - task: AzureCLI@2
+                  displayName: 'terraform plan'
+                  inputs:
+                    azureSubscription: 'fabric-sc-prod'
+                    scriptType: 'bash'
+                    scriptLocation: 'inlineScript'
+                    workingDirectory: '$(tfRoot)'
+                    addSpnToEnvironment: true
+                    inlineScript: |
+                      set -euo pipefail
+                      export ARM_CLIENT_ID="$servicePrincipalId"
+                      export ARM_CLIENT_SECRET="$servicePrincipalKey"
+                      export ARM_TENANT_ID="$tenantId"
+                      export ARM_SUBSCRIPTION_ID="$(subscriptionId)"
+
+                      terraform plan -out=prod.tfplan \
+                        -var-file=envs/prod.tfvars \
+                        -var="azure_client_id=$(FunctionSpnClientId)" \
+                        -var="function_spn_object_id=$(FunctionSpnObjectId)" \
+                        -var="key_vault_name=$(KeyVaultNameProd)"
+
+                      terraform show -no-color prod.tfplan \
+                        > "$(Build.ArtifactStagingDirectory)/prod-plan.txt"
+
+                - publish: '$(Build.ArtifactStagingDirectory)/prod-plan.txt'
+                  artifact: prod-plan
+                  displayName: 'Publish plan for review'
+
+                - task: AzureCLI@2
+                  displayName: 'terraform apply'
+                  inputs:
+                    azureSubscription: 'fabric-sc-prod'
+                    scriptType: 'bash'
+                    scriptLocation: 'inlineScript'
+                    workingDirectory: '$(tfRoot)'
+                    addSpnToEnvironment: true
+                    inlineScript: |
+                      set -euo pipefail
+                      export ARM_CLIENT_ID="$servicePrincipalId"
+                      export ARM_CLIENT_SECRET="$servicePrincipalKey"
+                      export ARM_TENANT_ID="$tenantId"
+                      export ARM_SUBSCRIPTION_ID="$(subscriptionId)"
+                      terraform apply -auto-approve prod.tfplan
+
+                # A Flex deploy can report success while indexing fails, leaving
+                # an app with zero functions. Fail the release if that happened.
+                - task: AzureCLI@2
+                  displayName: 'Smoke: both triggers indexed'
+                  inputs:
+                    azureSubscription: 'fabric-sc-prod'
+                    scriptType: 'bash'
+                    scriptLocation: 'inlineScript'
+                    inlineScript: |
+                      set -euo pipefail
+                      FNS=$(az functionapp function list \
+                        --resource-group fabricpausecapacitiesapp \
+                        --name fabric-pause-capacities-flex \
+                        --query "[].name" -o tsv)
+                      echo "Indexed functions:"
+                      echo "$FNS"
+                      echo "$FNS" | grep -q 'pause_capacities' \
+                        || { echo "pause_capacities missing"; exit 1; }
+                      echo "$FNS" | grep -q 'resume_capacities' \
+                        || { echo "resume_capacities missing"; exit 1; }

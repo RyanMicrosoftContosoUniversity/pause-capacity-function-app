@@ -1,0 +1,27 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Integration tests touch a real Fabric capacity and are opt-in via -m integration.
+addopts = "-ra -m 'not integration'"
+markers = [
+    "integration: talks to real Azure resources; requires a deployed test capacity",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = [".venv", ".python_packages", "__pycache__"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+
+[tool.black]
+line-length = 100
+target-version = ["py311"]
+extend-exclude = '(\.venv|\.python_packages)'
+
+[tool.coverage.run]
+source = ["src/function"]
+omit = ["*/__pycache__/*"]
+
+[tool.coverage.report]
+exclude_lines = ["if __name__ == .__main__.:", "raise NotImplementedError"]

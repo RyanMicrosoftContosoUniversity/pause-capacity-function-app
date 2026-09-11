@@ -25,7 +25,7 @@ Notes on behaviour:
 import logging
 import os
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import azure.functions as func
 
@@ -82,9 +82,7 @@ def _capacity_state(capacity_client) -> str:
     try:
         return capacity_client.get_capacity()["properties"]["state"]
     except Exception as exc:  # noqa: BLE001
-        logging.warning(
-            "Could not read state for %s: %s", capacity_client.capacity_name, exc
-        )
+        logging.warning("Could not read state for %s: %s", capacity_client.capacity_name, exc)
         return "Unknown"
 
 
@@ -94,16 +92,14 @@ def _wait_for_active(capacity_client):
     while time.monotonic() < deadline:
         state = _capacity_state(capacity_client)
         if state == "Active":
-            observed = datetime.now(timezone.utc)
+            observed = datetime.now(UTC)
             logging.info(
                 "Capacity %s is Active at %s",
                 capacity_client.capacity_name,
                 observed.isoformat(),
             )
             return observed
-        logging.info(
-            "Capacity %s state=%s; waiting", capacity_client.capacity_name, state
-        )
+        logging.info("Capacity %s state=%s; waiting", capacity_client.capacity_name, state)
         time.sleep(RESUME_POLL_INTERVAL_SECONDS)
     logging.error(
         "Capacity %s did not reach Active within %ss",
@@ -140,12 +136,10 @@ def _airflow_health_check(spn):
     deadline = time.monotonic() + HEALTHCHECK_TIMEOUT_SECONDS
     while time.monotonic() < deadline:
         try:
-            response = requests.get(
-                url, headers={"Authorization": f"Bearer {token}"}, timeout=60
-            )
+            response = requests.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=60)
             if response.status_code == 200:
                 jobs = response.json().get("value", [])
-                observed = datetime.now(timezone.utc)
+                observed = datetime.now(UTC)
                 logging.info(
                     "Airflow health check passed at %s (%d job(s))",
                     observed.isoformat(),
@@ -157,9 +151,7 @@ def _airflow_health_check(spn):
             logging.info("Airflow health check error (%s); retrying", exc)
         time.sleep(HEALTHCHECK_INTERVAL_SECONDS)
 
-    logging.error(
-        "Airflow health check did not pass within %ss", HEALTHCHECK_TIMEOUT_SECONDS
-    )
+    logging.error("Airflow health check did not pass within %ss", HEALTHCHECK_TIMEOUT_SECONDS)
     return None
 
 
@@ -191,9 +183,7 @@ def pause_capacities(myTimer: func.TimerRequest) -> None:
             logging.error("Failed to pause capacity %s: %s", name, exc)
             failed.append(name)
 
-    logging.info(
-        "Pause complete. paused=%s skipped=%s failed=%s", paused, skipped, failed
-    )
+    logging.info("Pause complete. paused=%s skipped=%s failed=%s", paused, skipped, failed)
 
 
 @app.timer_trigger(
@@ -204,7 +194,7 @@ def pause_capacities(myTimer: func.TimerRequest) -> None:
 )
 def resume_capacities(myTimer: func.TimerRequest) -> None:
     logging.info("Resume trigger started for resource group %s", RESOURCE_GROUP)
-    requested_at = datetime.now(timezone.utc)
+    requested_at = datetime.now(UTC)
     spn = _build_spn()
 
     resumed, skipped, failed = [], [], []
@@ -240,5 +230,3 @@ def resume_capacities(myTimer: func.TimerRequest) -> None:
         failed,
         airflow_ready_at.isoformat() if airflow_ready_at else "not-verified",
     )
-
-

@@ -133,3 +133,25 @@ __blobstorage__
 __queuestorage__
 __azurite_db*__.json
 .python_packages
+# Terraform
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+crash.*.log
+# tfvars may carry secrets; the committed envs/*.tfvars are reviewed and
+# deliberately secret-free, so only ignore local overrides.
+*.auto.tfvars
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
+
+# Build artifact produced by the archive_file data source
+iac/function.zip
+
+# Tooling
+.ruff_cache/
