@@ -28,7 +28,7 @@ healthcheck_workspace_id = ""
 
 key_vault_name           = "kvfabricprodeus2rh"
 key_vault_resource_group = "fabric-rg"
-spn_secret_name          = "fabric-automation-spn-secret"
+spn_secret_name          = "spn-secret"
 azure_client_id          = "__SET_IN_PIPELINE__"
 azure_tenant_id          = "35acf02c-4b87-4ae6-9221-ff5cafd430b4"
 

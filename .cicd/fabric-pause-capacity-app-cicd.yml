@@ -24,7 +24,7 @@
 #
 # Prerequisites in Azure DevOps (project: Contoso-University):
 #   - Service connections: `fabric-sc` (TEST), `fabric-sc-prod` (PROD)
-#   - Environment `fabric-prod` with a required approval check
+#   - Environment `Fabric-Prod` with a required approval check
 #   - Variable group providing: KeyVaultNameNonProd, KeyVaultNameProd,
 #     TF_BACKEND_RG, TF_BACKEND_SA, TF_BACKEND_CONTAINER, FunctionSpnClientId,
 #     FunctionSpnObjectId
@@ -276,7 +276,7 @@ stages:
     jobs:
       - deployment: ApplyProd
         displayName: 'terraform apply (prod)'
-        environment: 'fabric-prod'
+        environment: 'Fabric-Prod'
         timeoutInMinutes: 60
         strategy:
           runOnce:
