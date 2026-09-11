@@ -191,28 +191,6 @@ resource "null_resource" "function_deploy" {
         --src ${data.archive_file.function_zip.output_path} `
         --build-remote true 2>&1 | Out-Host
 
-      # The zip deploy re-injects connection-string settings that conflict with
-      # identity-based host storage. With both AzureWebJobsStorage (a connection
-      # string) and AzureWebJobsStorage__accountName present, the host reports
-      #   azure.functions.webjobs.storage: Unhealthy, AuthenticationFailed
-      # and is recycled on a loop, killing long-running invocations mid-flight.
-      #
-      # Terraform never declares these, so removing them converges the app on
-      # the declared state rather than leaving whatever the CLI last wrote.
-      $injected = az functionapp config appsettings list `
-        --resource-group ${azurerm_resource_group.this.name} `
-        --name ${var.function_app_name} `
-        --query "[?name=='AzureWebJobsStorage' || name=='DEPLOYMENT_STORAGE_CONNECTION_STRING'].name" `
-        -o tsv 2>$null
-
-      if ($injected) {
-        Write-Host "Removing injected settings: $($injected -join ', ')"
-        az functionapp config appsettings delete `
-          --resource-group ${azurerm_resource_group.this.name} `
-          --name ${var.function_app_name} `
-          --setting-names $injected 2>&1 | Out-Host
-      }
-
       # The CLI's post-deploy host key check sporadically exits 1 even when the
       # zip deploy succeeded. Verify registration instead of trusting the code.
       Start-Sleep -Seconds 30
@@ -234,4 +212,58 @@ resource "null_resource" "function_deploy" {
     azurerm_storage_blob.function_zip,
     azurerm_role_assignment.func_storage_blob,
   ]
+}
+
+# Remove connection-string settings the platform injects behind Terraform's back.
+#
+# Updating the Flex app (or deploying to it) writes AzureWebJobsStorage and
+# DEPLOYMENT_STORAGE_CONNECTION_STRING as full connection strings, even though
+# neither is declared in app_settings above. Alongside the identity-based
+# AzureWebJobsStorage__accountName, the host then reports every 30 seconds:
+#
+#   azure.functions.webjobs.storage: Unhealthy, "Unable to access
+#   AzureWebJobsStorage", errorCode "AuthenticationFailed"
+#
+# and recycles the worker, which would abort a pause or resume mid-flight.
+#
+# This runs on every apply rather than keying off the deployment package,
+# because the injection happens on app *updates* too -- a content-based trigger
+# would skip precisely the runs that reintroduce the problem.
+resource "null_resource" "strip_injected_storage_settings" {
+  triggers = {
+    always_run = timestamp()
+  }
+
+  depends_on = [
+    azurerm_function_app_flex_consumption.func,
+    null_resource.function_deploy,
+  ]
+
+  provisioner "local-exec" {
+    interpreter = ["pwsh", "-NoProfile", "-Command"]
+    command     = <<-EOT
+      $ErrorActionPreference = 'Continue'
+
+      $injected = az functionapp config appsettings list `
+        --resource-group ${azurerm_resource_group.this.name} `
+        --name ${var.function_app_name} `
+        --query "[?name=='AzureWebJobsStorage' || name=='DEPLOYMENT_STORAGE_CONNECTION_STRING'].name" `
+        -o tsv 2>$null
+
+      if (-not $injected) {
+        Write-Host "No injected storage settings present."
+        exit 0
+      }
+
+      Write-Host "Removing injected settings: $($injected -join ', ')"
+      az functionapp config appsettings delete `
+        --resource-group ${azurerm_resource_group.this.name} `
+        --name ${var.function_app_name} `
+        --setting-names $injected 2>&1 | Out-Host
+
+      # Deleting settings restarts the app; give the host time to come back on
+      # the identity path before anything downstream calls it.
+      Start-Sleep -Seconds 30
+    EOT
+  }
 }
