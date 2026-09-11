@@ -2,7 +2,7 @@
 
 These paths import their dependencies lazily inside the function body, so they
 are exercised here by stubbing the modules in ``sys.modules`` rather than by
-patching attributes on ``function_app``.
+patching attributes on the module under test.
 """
 
 import sys
@@ -51,51 +51,58 @@ def stub_credential(monkeypatch):
     return _Credential
 
 
-def test_health_check_returns_timestamp_on_success(function_app, monkeypatch, stub_credential):
-    monkeypatch.setattr(function_app, "HEALTHCHECK_WORKSPACE_ID", "ws-123")
+def test_health_check_returns_timestamp_on_success(
+    healthcheck, config, monkeypatch, stub_credential
+):
+    monkeypatch.setattr(config, "HEALTHCHECK_WORKSPACE_ID", "ws-123")
     monkeypatch.setattr(
         requests,
         "get",
         lambda *a, **k: _Response(200, {"value": [{"id": "job-1"}]}),
     )
 
-    observed = function_app._airflow_health_check(_FakeSpn())
+    observed = healthcheck.airflow_health_check(_FakeSpn())
 
     assert observed is not None
     assert observed.tzinfo is not None
 
 
-def test_health_check_gives_up_after_timeout(function_app, monkeypatch, stub_credential):
+def test_health_check_gives_up_after_timeout(healthcheck, config, monkeypatch, stub_credential):
     """A workspace that never serves Airflow jobs must return None rather than
     blocking the invocation until the host kills it."""
     import itertools
 
-    monkeypatch.setattr(function_app, "HEALTHCHECK_WORKSPACE_ID", "ws-123")
-    monkeypatch.setattr(function_app, "HEALTHCHECK_TIMEOUT_SECONDS", 5)
-    monkeypatch.setattr(function_app, "HEALTHCHECK_INTERVAL_SECONDS", 1)
+    monkeypatch.setattr(config, "HEALTHCHECK_WORKSPACE_ID", "ws-123")
+    monkeypatch.setattr(config, "HEALTHCHECK_TIMEOUT_SECONDS", 5)
+    monkeypatch.setattr(config, "HEALTHCHECK_INTERVAL_SECONDS", 1)
     monkeypatch.setattr(requests, "get", lambda *a, **k: _Response(503))
 
     clock = itertools.count(0, 2)
-    monkeypatch.setattr(function_app.time, "monotonic", lambda: next(clock))
+    monkeypatch.setattr(healthcheck.time, "monotonic", lambda: next(clock))
 
-    assert function_app._airflow_health_check(_FakeSpn()) is None
+    assert healthcheck.airflow_health_check(_FakeSpn()) is None
 
 
-def test_health_check_survives_transport_errors(function_app, monkeypatch, stub_credential):
+def test_health_check_survives_transport_errors(healthcheck, config, monkeypatch, stub_credential):
     import itertools
 
     def _boom(*_args, **_kwargs):
         raise requests.ConnectionError("no route to host")
 
-    monkeypatch.setattr(function_app, "HEALTHCHECK_WORKSPACE_ID", "ws-123")
-    monkeypatch.setattr(function_app, "HEALTHCHECK_TIMEOUT_SECONDS", 5)
-    monkeypatch.setattr(function_app, "HEALTHCHECK_INTERVAL_SECONDS", 1)
+    monkeypatch.setattr(config, "HEALTHCHECK_WORKSPACE_ID", "ws-123")
+    monkeypatch.setattr(config, "HEALTHCHECK_TIMEOUT_SECONDS", 5)
+    monkeypatch.setattr(config, "HEALTHCHECK_INTERVAL_SECONDS", 1)
     monkeypatch.setattr(requests, "get", _boom)
 
     clock = itertools.count(0, 2)
-    monkeypatch.setattr(function_app.time, "monotonic", lambda: next(clock))
+    monkeypatch.setattr(healthcheck.time, "monotonic", lambda: next(clock))
 
-    assert function_app._airflow_health_check(_FakeSpn()) is None
+    assert healthcheck.airflow_health_check(_FakeSpn()) is None
+
+
+def test_health_check_skipped_when_workspace_unset(healthcheck, config, monkeypatch):
+    monkeypatch.setattr(config, "HEALTHCHECK_WORKSPACE_ID", "")
+    assert healthcheck.airflow_health_check(object()) is None
 
 
 # --- client factories ------------------------------------------------------
@@ -157,17 +164,13 @@ def stub_fabric_utils(monkeypatch):
     return captured
 
 
-def test_build_spn_reads_credentials_from_environment(function_app, stub_fabric_utils, monkeypatch):
+def test_build_spn_reads_credentials_from_environment(identity, stub_fabric_utils, monkeypatch):
     monkeypatch.setenv("FABRIC_SPN_CLIENT_ID", "client-id")
     monkeypatch.setenv("FABRIC_SPN_TENANT_ID", "tenant-id")
     monkeypatch.setenv("SPN_SECRET_NAME", "secret-name")
     monkeypatch.setenv("VAULT_URL", "https://vault.example/")
 
-    # _build_spn is stubbed by the shared fixture; reach for the real one.
-    import importlib
-
-    module = importlib.reload(function_app)
-    module._build_spn()
+    identity.build_spn()
 
     assert stub_fabric_utils["spn_kwargs"] == {
         "client_id": "client-id",
@@ -177,7 +180,7 @@ def test_build_spn_reads_credentials_from_environment(function_app, stub_fabric_
     }
 
 
-def test_spn_settings_prefer_the_non_reserved_names(function_app, monkeypatch):
+def test_spn_settings_prefer_the_non_reserved_names(identity, monkeypatch):
     """Regression guard.
 
     AZURE_CLIENT_ID is reserved by the Azure Identity SDK. With managed-identity
@@ -190,32 +193,32 @@ def test_spn_settings_prefer_the_non_reserved_names(function_app, monkeypatch):
     monkeypatch.setenv("FABRIC_SPN_CLIENT_ID", "correct")
     monkeypatch.setenv("AZURE_CLIENT_ID", "reserved-and-wrong")
 
-    assert function_app._spn_setting("FABRIC_SPN_CLIENT_ID", "AZURE_CLIENT_ID") == "correct"
+    assert identity.spn_setting("FABRIC_SPN_CLIENT_ID", "AZURE_CLIENT_ID") == "correct"
 
 
-def test_spn_settings_fall_back_for_the_unmigrated_prod_app(function_app, monkeypatch):
+def test_spn_settings_fall_back_for_the_unmigrated_prod_app(identity, monkeypatch):
     monkeypatch.delenv("FABRIC_SPN_CLIENT_ID", raising=False)
     monkeypatch.setenv("AZURE_CLIENT_ID", "legacy")
 
-    assert function_app._spn_setting("FABRIC_SPN_CLIENT_ID", "AZURE_CLIENT_ID") == "legacy"
+    assert identity.spn_setting("FABRIC_SPN_CLIENT_ID", "AZURE_CLIENT_ID") == "legacy"
 
 
-def test_spn_settings_returns_none_when_neither_is_set(function_app, monkeypatch):
+def test_spn_settings_returns_none_when_neither_is_set(identity, monkeypatch):
     monkeypatch.delenv("FABRIC_SPN_CLIENT_ID", raising=False)
     monkeypatch.delenv("AZURE_CLIENT_ID", raising=False)
 
-    assert function_app._spn_setting("FABRIC_SPN_CLIENT_ID", "AZURE_CLIENT_ID") is None
+    assert identity.spn_setting("FABRIC_SPN_CLIENT_ID", "AZURE_CLIENT_ID") is None
 
 
 def test_iter_capacity_clients_is_scoped_to_the_configured_resource_group(
-    function_app, stub_fabric_utils, monkeypatch
+    capacity, config, stub_fabric_utils, monkeypatch
 ):
     """The listing call must be the resource-group variant. Using the
     subscription-wide one would put every capacity in the blast radius."""
     monkeypatch.setenv("SUBSCRIPTION_ID", "sub-123")
-    monkeypatch.setattr(function_app, "RESOURCE_GROUP", "test-capacity-pause-app-rg")
+    monkeypatch.setattr(config, "RESOURCE_GROUP", "test-capacity-pause-app-rg")
 
-    clients = list(function_app._iter_capacity_clients(object()))
+    clients = list(capacity.iter_capacity_clients(object()))
 
     assert [c.capacity_name for c in clients] == ["cap-a"]
     assert stub_fabric_utils["listing_kwargs"]["rg_name"] == "test-capacity-pause-app-rg"

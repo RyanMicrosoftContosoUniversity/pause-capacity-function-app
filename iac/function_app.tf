@@ -68,6 +68,7 @@ data "archive_file" "function_zip" {
 
   excludes = [
     "__pycache__",
+    "capacity_ops/__pycache__",
     "local.settings.json",
     ".pytest_cache",
     ".ruff_cache",

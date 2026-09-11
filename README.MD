@@ -48,6 +48,7 @@ app's entire blast radius — it is the single most important setting here.
 
 ```
 src/function/     Deployment package (function_app.py, host.json, requirements.txt)
+  capacity_ops/   Pause/resume logic; function_app.py holds only the triggers
 iac/              Terraform: Function App, storage, telemetry, RBAC, alerts, test capacity
   envs/           Per-environment tfvars (test, prod)
   backends/       Per-environment remote state config

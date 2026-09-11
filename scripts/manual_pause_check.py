@@ -37,7 +37,7 @@ PROTECTED_RESOURCE_GROUPS = {"fabric-rg"}
 def build_spn() -> ServicePrincipal:
     # FABRIC_SPN_* rather than AZURE_*: the latter are reserved by the Azure
     # Identity SDK and break managed-identity storage access in the deployed
-    # app. See _spn_setting in function_app.py.
+    # app. See spn_setting in capacity_ops/identity.py.
     return ServicePrincipal(
         client_id=os.getenv("FABRIC_SPN_CLIENT_ID") or os.getenv("AZURE_CLIENT_ID"),
         tenant_id=os.getenv("FABRIC_SPN_TENANT_ID") or os.getenv("AZURE_TENANT_ID"),
