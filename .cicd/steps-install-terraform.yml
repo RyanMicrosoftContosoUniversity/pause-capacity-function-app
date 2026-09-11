@@ -1,0 +1,29 @@
+# Installs the Terraform CLI without the marketplace TerraformInstaller task.
+#
+# That task ships in the Microsoft DevLabs "Terraform" extension, which is not
+# installed in this organisation -- referencing it fails the pipeline at compile
+# time with "A task is missing". Downloading the binary keeps the pipeline
+# self-contained and matches the other Terraform pipelines in this project.
+
+parameters:
+  - name: terraformVersion
+    type: string
+    default: '1.9.8'
+
+steps:
+  - bash: |
+      set -euo pipefail
+      TF_VERSION="${{ parameters.terraformVersion }}"
+
+      if command -v terraform >/dev/null 2>&1 && \
+         terraform version | head -n1 | grep -q "v${TF_VERSION}"; then
+        echo "Terraform ${TF_VERSION} already present."
+        exit 0
+      fi
+
+      curl -fsSL -o /tmp/terraform.zip \
+        "https://releases.hashicorp.com/terraform/${TF_VERSION}/terraform_${TF_VERSION}_linux_amd64.zip"
+      unzip -o /tmp/terraform.zip -d /tmp/terraform-bin
+      sudo mv /tmp/terraform-bin/terraform /usr/local/bin/terraform
+      terraform version
+    displayName: 'Install Terraform ${{ parameters.terraformVersion }}'

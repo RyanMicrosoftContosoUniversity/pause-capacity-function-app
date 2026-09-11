@@ -145,8 +145,8 @@ stages:
       - job: TerraformValidate
         displayName: 'Terraform fmt and validate'
         steps:
-          - task: TerraformInstaller@1
-            inputs:
+          - template: steps-install-terraform.yml
+            parameters:
               terraformVersion: '$(terraformVersion)'
 
           - script: terraform fmt -check -recursive
@@ -174,8 +174,8 @@ stages:
             inputs:
               versionSpec: '$(pythonVersion)'
 
-          - task: TerraformInstaller@1
-            inputs:
+          - template: steps-install-terraform.yml
+            parameters:
               terraformVersion: '$(terraformVersion)'
 
           - task: AzureCLI@2
@@ -284,8 +284,8 @@ stages:
               steps:
                 - checkout: self
 
-                - task: TerraformInstaller@1
-                  inputs:
+                - template: steps-install-terraform.yml
+                  parameters:
                     terraformVersion: '$(terraformVersion)'
 
                 - task: AzureCLI@2
