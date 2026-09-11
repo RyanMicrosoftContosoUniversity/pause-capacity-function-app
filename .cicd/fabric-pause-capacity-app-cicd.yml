@@ -24,10 +24,12 @@
 #
 # Prerequisites in Azure DevOps (project: Contoso-University):
 #   - Service connections: `fabric-sc` (TEST), `fabric-sc-prod` (PROD)
-#   - Environment `fabric-prod` with a required approval check
-#   - Variable group providing: KeyVaultNameNonProd, KeyVaultNameProd,
-#     TF_BACKEND_RG, TF_BACKEND_SA, TF_BACKEND_CONTAINER, FunctionSpnClientId,
-#     FunctionSpnObjectId
+#   - Environment `Fabric-Prod` with a required approval check
+#   - Variable group `fabric-automation` providing the Terraform state backend:
+#     TF_BACKEND_RG, TF_BACKEND_SA, TF_BACKEND_CONTAINER.
+#     Identity and Key Vault settings are NOT here -- they differ per
+#     environment and live in iac/envs/*.tfvars, so that TEST cannot silently
+#     run as the production service principal.
 
 trigger:
   branches:
@@ -145,8 +147,8 @@ stages:
       - job: TerraformValidate
         displayName: 'Terraform fmt and validate'
         steps:
-          - task: TerraformInstaller@1
-            inputs:
+          - template: steps-install-terraform.yml
+            parameters:
               terraformVersion: '$(terraformVersion)'
 
           - script: terraform fmt -check -recursive
@@ -164,7 +166,15 @@ stages:
   - stage: DeployTest
     displayName: 'Deploy TEST'
     dependsOn: Validate
-    condition: and(succeeded(), ne('${{ parameters.skipInfra }}', 'true'))
+    # PR builds run Validate only. A pull request must not apply Terraform:
+    # two PRs (or a PR and a develop build) would race on the same TEST state
+    # file and the same capacity, and PR branches are unreviewed by definition.
+    condition: |
+      and(
+        succeeded(),
+        ne('${{ parameters.skipInfra }}', 'true'),
+        ne(variables['Build.Reason'], 'PullRequest')
+      )
     jobs:
       - job: Apply
         displayName: 'terraform apply (test)'
@@ -174,8 +184,8 @@ stages:
             inputs:
               versionSpec: '$(pythonVersion)'
 
-          - task: TerraformInstaller@1
-            inputs:
+          - template: steps-install-terraform.yml
+            parameters:
               terraformVersion: '$(terraformVersion)'
 
           - task: AzureCLI@2
@@ -185,13 +195,15 @@ stages:
               scriptType: 'bash'
               scriptLocation: 'inlineScript'
               workingDirectory: '$(tfRoot)'
-              # Surface the service connection's credentials to the azurerm
-              # provider and to DefaultAzureCredential in the integration tests.
+              # Expose the service connection identity to the azurerm provider.
+              # This connection uses workload identity federation, so the token
+              # arrives as $idToken and there is no $servicePrincipalKey.
               addSpnToEnvironment: true
               inlineScript: |
                 set -euo pipefail
                 export ARM_CLIENT_ID="$servicePrincipalId"
-                export ARM_CLIENT_SECRET="$servicePrincipalKey"
+                export ARM_USE_OIDC=true
+                export ARM_OIDC_TOKEN="$idToken"
                 export ARM_TENANT_ID="$tenantId"
                 export ARM_SUBSCRIPTION_ID="$(subscriptionId)"
 
@@ -201,11 +213,7 @@ stages:
                   -backend-config="storage_account_name=$(TF_BACKEND_SA)" \
                   -backend-config="container_name=$(TF_BACKEND_CONTAINER)"
 
-                terraform apply -auto-approve \
-                  -var-file=envs/test.tfvars \
-                  -var="azure_client_id=$(FunctionSpnClientId)" \
-                  -var="function_spn_object_id=$(FunctionSpnObjectId)" \
-                  -var="key_vault_name=$(KeyVaultNameNonProd)"
+                terraform apply -auto-approve -var-file=envs/test.tfvars
 
                 terraform output -json > "$(Build.ArtifactStagingDirectory)/tf-output.json"
 
@@ -221,9 +229,12 @@ stages:
                 set -euo pipefail
                 pip install -r requirements-dev.txt -r src/function/requirements.txt
 
-                export AZURE_CLIENT_ID="$servicePrincipalId"
-                export AZURE_CLIENT_SECRET="$servicePrincipalKey"
-                export AZURE_TENANT_ID="$tenantId"
+                # No AZURE_CLIENT_* exports here on purpose. The service
+                # connection is federated, so there is no secret to pass, and
+                # setting AZURE_CLIENT_ID without one makes
+                # DefaultAzureCredential try EnvironmentCredential and fail.
+                # The AzureCLI task has already run `az login`, so the chain
+                # falls through to AzureCliCredential.
                 export SUBSCRIPTION_ID="$(subscriptionId)"
 
                 OUT="$(Build.ArtifactStagingDirectory)/tf-output.json"
@@ -247,7 +258,9 @@ stages:
   - stage: PauseTestCapacity
     displayName: 'Pause test capacity'
     dependsOn: DeployTest
-    condition: always()
+    # always(), so a failed test run still leaves the capacity paused -- but not
+    # for PR builds, which never started it.
+    condition: and(always(), ne(variables['Build.Reason'], 'PullRequest'))
     jobs:
       - job: Pause
         displayName: 'Pause the F2 so it costs nothing idle'
@@ -276,7 +289,7 @@ stages:
     jobs:
       - deployment: ApplyProd
         displayName: 'terraform apply (prod)'
-        environment: 'fabric-prod'
+        environment: 'Fabric-Prod'
         timeoutInMinutes: 60
         strategy:
           runOnce:
@@ -284,8 +297,8 @@ stages:
               steps:
                 - checkout: self
 
-                - task: TerraformInstaller@1
-                  inputs:
+                - template: steps-install-terraform.yml
+                  parameters:
                     terraformVersion: '$(terraformVersion)'
 
                 - task: AzureCLI@2
@@ -299,7 +312,8 @@ stages:
                     inlineScript: |
                       set -euo pipefail
                       export ARM_CLIENT_ID="$servicePrincipalId"
-                      export ARM_CLIENT_SECRET="$servicePrincipalKey"
+                      export ARM_USE_OIDC=true
+                      export ARM_OIDC_TOKEN="$idToken"
                       export ARM_TENANT_ID="$tenantId"
                       export ARM_SUBSCRIPTION_ID="$(subscriptionId)"
 
@@ -320,7 +334,8 @@ stages:
                     addSpnToEnvironment: true
                     inlineScript: |
                       $env:ARM_CLIENT_ID = "$env:servicePrincipalId"
-                      $env:ARM_CLIENT_SECRET = "$env:servicePrincipalKey"
+                      $env:ARM_USE_OIDC = "true"
+                      $env:ARM_OIDC_TOKEN = "$env:idToken"
                       $env:ARM_TENANT_ID = "$env:tenantId"
                       $env:ARM_SUBSCRIPTION_ID = "$(subscriptionId)"
                       ./import-prod.ps1 -SubscriptionId "$(subscriptionId)"
@@ -338,15 +353,12 @@ stages:
                     inlineScript: |
                       set -euo pipefail
                       export ARM_CLIENT_ID="$servicePrincipalId"
-                      export ARM_CLIENT_SECRET="$servicePrincipalKey"
+                      export ARM_USE_OIDC=true
+                      export ARM_OIDC_TOKEN="$idToken"
                       export ARM_TENANT_ID="$tenantId"
                       export ARM_SUBSCRIPTION_ID="$(subscriptionId)"
 
-                      terraform plan -out=prod.tfplan \
-                        -var-file=envs/prod.tfvars \
-                        -var="azure_client_id=$(FunctionSpnClientId)" \
-                        -var="function_spn_object_id=$(FunctionSpnObjectId)" \
-                        -var="key_vault_name=$(KeyVaultNameProd)"
+                      terraform plan -out=prod.tfplan -var-file=envs/prod.tfvars
 
                       terraform show -no-color prod.tfplan \
                         > "$(Build.ArtifactStagingDirectory)/prod-plan.txt"
@@ -366,7 +378,8 @@ stages:
                     inlineScript: |
                       set -euo pipefail
                       export ARM_CLIENT_ID="$servicePrincipalId"
-                      export ARM_CLIENT_SECRET="$servicePrincipalKey"
+                      export ARM_USE_OIDC=true
+                      export ARM_OIDC_TOKEN="$idToken"
                       export ARM_TENANT_ID="$tenantId"
                       export ARM_SUBSCRIPTION_ID="$(subscriptionId)"
                       terraform apply -auto-approve prod.tfplan

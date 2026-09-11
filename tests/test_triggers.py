@@ -1,95 +1,68 @@
-"""Tests for the pause and resume timer triggers."""
+"""The timer triggers must do nothing but build an SPN and delegate.
+
+Any logic that creeps back into ``function_app.py`` is untestable without the
+Functions host, so these tests pin the delegation rather than the behaviour.
+Behaviour is covered in ``test_operations.py``.
+"""
+
+import pytest
 
 
-def _install_clients(function_app, monkeypatch, clients):
-    monkeypatch.setattr(function_app, "_iter_capacity_clients", lambda _spn: iter(clients))
+@pytest.fixture
+def recorded(monkeypatch):
+    from capacity_ops import operations
+
+    calls = {}
+    monkeypatch.setattr(operations, "pause_all", lambda spn: calls.setdefault("pause", spn))
+    monkeypatch.setattr(operations, "resume_all", lambda spn: calls.setdefault("resume", spn))
+    return calls
 
 
-# --- pause -----------------------------------------------------------------
-
-
-def test_pause_pauses_active_capacities(function_app, fake_client, monkeypatch, timer):
-    active = fake_client("cap-active", ["Active"])
-    _install_clients(function_app, monkeypatch, [active])
-
+def test_pause_trigger_delegates_to_operations(function_app, recorded, timer):
     function_app.pause_capacities(timer)
 
-    assert active.pause_calls == 1
+    assert "pause" in recorded
+    assert "resume" not in recorded
 
 
-def test_pause_skips_already_paused(function_app, fake_client, monkeypatch, timer):
-    paused = fake_client("cap-paused", ["Paused"])
-    _install_clients(function_app, monkeypatch, [paused])
-
-    function_app.pause_capacities(timer)
-
-    assert paused.pause_calls == 0, "pausing an already-paused capacity wastes an ARM call"
-
-
-def test_one_failing_capacity_does_not_stop_the_rest(function_app, fake_client, monkeypatch, timer):
-    """The whole point of the per-capacity try/except: a bad capacity must not
-    leave the remaining capacities running overnight."""
-    doomed = fake_client("cap-doomed", ["Active"], fail_on={"pause"})
-    healthy = fake_client("cap-healthy", ["Active"])
-    _install_clients(function_app, monkeypatch, [doomed, healthy])
-
-    function_app.pause_capacities(timer)
-
-    assert healthy.pause_calls == 1
-
-
-def test_pause_does_not_raise_when_every_capacity_fails(
-    function_app, fake_client, monkeypatch, timer
-):
-    """An unhandled exception would mark the invocation failed and trigger the
-    'failed fabric capacity pause' alert for a condition already logged."""
-    doomed = fake_client("cap-doomed", ["Active"], fail_on={"pause"})
-    _install_clients(function_app, monkeypatch, [doomed])
-
-    function_app.pause_capacities(timer)
-
-
-# --- resume ----------------------------------------------------------------
-
-
-def test_resume_resumes_paused_capacity(function_app, fake_client, monkeypatch, timer):
-    paused = fake_client("cap-paused", ["Paused", "Active"])
-    _install_clients(function_app, monkeypatch, [paused])
-    monkeypatch.setattr(function_app, "_airflow_health_check", lambda _spn: None)
-
+def test_resume_trigger_delegates_to_operations(function_app, recorded, timer):
     function_app.resume_capacities(timer)
 
-    assert paused.resume_calls == 1
+    assert "resume" in recorded
+    assert "pause" not in recorded
 
 
-def test_resume_skips_already_active(function_app, fake_client, monkeypatch, timer):
-    active = fake_client("cap-active", ["Active"])
-    _install_clients(function_app, monkeypatch, [active])
-    monkeypatch.setattr(function_app, "_airflow_health_check", lambda _spn: None)
+def test_triggers_pass_a_built_spn(function_app, recorded, timer, monkeypatch):
+    """The SPN is built per invocation, not held at module scope, so a rotated
+    Key Vault secret is picked up without restarting the app."""
+    from capacity_ops import identity
 
-    function_app.resume_capacities(timer)
+    sentinel = object()
+    monkeypatch.setattr(identity, "build_spn", lambda: sentinel)
 
-    assert active.resume_calls == 0
+    function_app.pause_capacities(timer)
 
-
-def test_resume_continues_after_a_capacity_never_becomes_active(
-    function_app, fake_client, monkeypatch, timer
-):
-    stuck = fake_client("cap-stuck", ["Paused"])
-    healthy = fake_client("cap-healthy", ["Paused", "Active"])
-    _install_clients(function_app, monkeypatch, [stuck, healthy])
-    monkeypatch.setattr(
-        function_app,
-        "_wait_for_active",
-        lambda client: None if client is stuck else object(),
-    )
-    monkeypatch.setattr(function_app, "_airflow_health_check", lambda _spn: None)
-
-    function_app.resume_capacities(timer)
-
-    assert healthy.resume_calls == 1
+    assert recorded["pause"] is sentinel
 
 
-def test_airflow_health_check_skipped_when_workspace_unset(function_app, monkeypatch):
-    monkeypatch.setattr(function_app, "HEALTHCHECK_WORKSPACE_ID", "")
-    assert function_app._airflow_health_check(object()) is None
+def test_function_app_does_not_import_dependencies_at_module_scope():
+    """Regression guard.
+
+    The Functions host discovers triggers by importing this module. If it pulls
+    in ``fabric_utils`` (installed from a git branch) at module scope, a bad
+    dependency yields an app with zero registered functions instead of one
+    failed invocation.
+    """
+    from pathlib import Path
+
+    source = (
+        Path(__file__).resolve().parents[1] / "src" / "function" / "function_app.py"
+    ).read_text()
+
+    module_scope = [
+        line
+        for line in source.splitlines()
+        if line.startswith(("import ", "from ")) and not line.startswith("from __future__")
+    ]
+
+    assert module_scope == ["import azure.functions as func"]

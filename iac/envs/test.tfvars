@@ -27,9 +27,21 @@ healthcheck_workspace_id = ""
 
 key_vault_name           = "kvfabricnonprodeus2rh"
 key_vault_resource_group = "fabric-rg"
-spn_secret_name          = "fabric-automation-spn-secret"
-azure_client_id          = "__SET_IN_PIPELINE__"
+spn_secret_name          = "spn-secret"
 azure_tenant_id          = "35acf02c-4b87-4ae6-9221-ff5cafd430b4"
+
+# fabric-non-prod-spn, NOT fabric-prod-spn.
+#
+# Two reasons. First, correctness: `spn-secret` in kvfabricnonprodeus2rh is this
+# principal's secret. Pairing it with the prod client ID returns
+# AADSTS7000215 "Invalid client secret", which fabric_utils surfaces as an
+# unhelpful KeyError: 'expires_in'.
+#
+# Second, blast radius: fabric-prod-spn holds Contributor on fabric-rg. Running
+# TEST as that identity would mean a mistyped FABRIC_RESOURCE_GROUP could pause
+# production capacities. This principal has no rights there.
+azure_client_id        = "b86b79cc-7f08-4c20-9ed6-0bdb91abb7b1"
+function_spn_object_id = "2b1b3570-b1e9-4e2f-9f8b-e47653dbf652"
 
 test_capacity = {
   enabled = true

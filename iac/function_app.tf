@@ -68,6 +68,7 @@ data "archive_file" "function_zip" {
 
   excludes = [
     "__pycache__",
+    "capacity_ops/__pycache__",
     "local.settings.json",
     ".pytest_cache",
     ".ruff_cache",
@@ -145,8 +146,18 @@ resource "azurerm_function_app_flex_consumption" "func" {
     FABRIC_RESOURCE_GROUP = var.fabric_resource_group
     WEBSITE_TIME_ZONE     = var.website_time_zone
 
-    AZURE_CLIENT_ID = var.azure_client_id
-    AZURE_TENANT_ID = var.azure_tenant_id
+    # Deliberately NOT named AZURE_CLIENT_ID / AZURE_TENANT_ID.
+    #
+    # Those names are reserved by the Azure Identity SDK. Because
+    # AzureWebJobsStorage above uses managed identity, the Functions host reads
+    # AZURE_CLIENT_ID and tries to authenticate as a *user-assigned* identity
+    # with that client ID. This app has a system-assigned identity, so the host
+    # fails with "No User Assigned or Delegated Managed Identity found" and
+    # loses access to its own secret repository -- no host keys, no triggers,
+    # and listKeys returns "Encountered an error from host runtime".
+    FABRIC_SPN_CLIENT_ID = var.azure_client_id
+    FABRIC_SPN_TENANT_ID = var.azure_tenant_id
+
     VAULT_URL       = data.azurerm_key_vault.spn.vault_uri
     SPN_SECRET_NAME = var.spn_secret_name
 
@@ -202,4 +213,58 @@ resource "null_resource" "function_deploy" {
     azurerm_storage_blob.function_zip,
     azurerm_role_assignment.func_storage_blob,
   ]
+}
+
+# Remove connection-string settings the platform injects behind Terraform's back.
+#
+# Updating the Flex app (or deploying to it) writes AzureWebJobsStorage and
+# DEPLOYMENT_STORAGE_CONNECTION_STRING as full connection strings, even though
+# neither is declared in app_settings above. Alongside the identity-based
+# AzureWebJobsStorage__accountName, the host then reports every 30 seconds:
+#
+#   azure.functions.webjobs.storage: Unhealthy, "Unable to access
+#   AzureWebJobsStorage", errorCode "AuthenticationFailed"
+#
+# and recycles the worker, which would abort a pause or resume mid-flight.
+#
+# This runs on every apply rather than keying off the deployment package,
+# because the injection happens on app *updates* too -- a content-based trigger
+# would skip precisely the runs that reintroduce the problem.
+resource "null_resource" "strip_injected_storage_settings" {
+  triggers = {
+    always_run = timestamp()
+  }
+
+  depends_on = [
+    azurerm_function_app_flex_consumption.func,
+    null_resource.function_deploy,
+  ]
+
+  provisioner "local-exec" {
+    interpreter = ["pwsh", "-NoProfile", "-Command"]
+    command     = <<-EOT
+      $ErrorActionPreference = 'Continue'
+
+      $injected = az functionapp config appsettings list `
+        --resource-group ${azurerm_resource_group.this.name} `
+        --name ${var.function_app_name} `
+        --query "[?name=='AzureWebJobsStorage' || name=='DEPLOYMENT_STORAGE_CONNECTION_STRING'].name" `
+        -o tsv 2>$null
+
+      if (-not $injected) {
+        Write-Host "No injected storage settings present."
+        exit 0
+      }
+
+      Write-Host "Removing injected settings: $($injected -join ', ')"
+      az functionapp config appsettings delete `
+        --resource-group ${azurerm_resource_group.this.name} `
+        --name ${var.function_app_name} `
+        --setting-names $injected 2>&1 | Out-Host
+
+      # Deleting settings restarts the app; give the host time to come back on
+      # the identity path before anything downstream calls it.
+      Start-Sleep -Seconds 30
+    EOT
+  }
 }

@@ -1,11 +1,14 @@
 """Shared fixtures.
 
-``function_app`` lives under ``src/function`` so the deployment package stays
-free of test and tooling files. It imports ``fabric_utils`` lazily inside each
-function, so importing the module here needs no Azure credentials.
+``function_app`` and the ``capacity_ops`` package live under ``src/function`` so
+the deployment package stays free of test and tooling files.
+
+``capacity_ops`` imports ``fabric_utils`` lazily inside the functions that need
+it, so importing these modules here needs no Azure credentials.
 """
 
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -52,15 +55,67 @@ def fake_client():
 
 
 @pytest.fixture
-def function_app(monkeypatch):
-    """Import function_app with a stubbed SPN builder and no real sleeping."""
-    monkeypatch.setenv("FABRIC_RESOURCE_GROUP", "test-capacity-pause-app-rg")
+def config(monkeypatch):
+    """The settings module, pinned to test values and never really sleeping.
+
+    Config is read from the environment at import, so values are pinned here
+    rather than left to whatever the developer's shell happens to export.
+    """
+    from capacity_ops import config as module
+
+    monkeypatch.setattr(module, "RESOURCE_GROUP", "test-capacity-pause-app-rg")
     monkeypatch.setenv("SUBSCRIPTION_ID", "00000000-0000-0000-0000-000000000000")
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+    return module
+
+
+@pytest.fixture
+def capacity(config):
+    from capacity_ops import capacity as module
+
+    return module
+
+
+@pytest.fixture
+def healthcheck(config):
+    from capacity_ops import healthcheck as module
+
+    return module
+
+
+@pytest.fixture
+def identity(config):
+    from capacity_ops import identity as module
+
+    return module
+
+
+@pytest.fixture
+def operations(config, monkeypatch):
+    """The orchestration module with the Airflow probe stubbed out.
+
+    Tests that exercise the probe itself use the ``healthcheck`` fixture.
+    """
+    from capacity_ops import healthcheck
+    from capacity_ops import operations as module
+
+    monkeypatch.setattr(healthcheck, "airflow_health_check", lambda _spn: None)
+    return module
+
+
+@pytest.fixture
+def function_app(monkeypatch):
+    """Import function_app with a stubbed SPN builder.
+
+    The triggers import ``capacity_ops`` lazily, so the stub goes on the package
+    rather than on ``function_app`` itself.
+    """
+    from capacity_ops import identity
+
+    monkeypatch.setattr(identity, "build_spn", lambda: object())
 
     import function_app as module
 
-    monkeypatch.setattr(module, "_build_spn", lambda: object())
-    monkeypatch.setattr(module.time, "sleep", lambda _seconds: None)
     return module
 
 
