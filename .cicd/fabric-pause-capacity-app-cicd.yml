@@ -25,9 +25,11 @@
 # Prerequisites in Azure DevOps (project: Contoso-University):
 #   - Service connections: `fabric-sc` (TEST), `fabric-sc-prod` (PROD)
 #   - Environment `Fabric-Prod` with a required approval check
-#   - Variable group providing: KeyVaultNameNonProd, KeyVaultNameProd,
-#     TF_BACKEND_RG, TF_BACKEND_SA, TF_BACKEND_CONTAINER, FunctionSpnClientId,
-#     FunctionSpnObjectId
+#   - Variable group `fabric-automation` providing the Terraform state backend:
+#     TF_BACKEND_RG, TF_BACKEND_SA, TF_BACKEND_CONTAINER.
+#     Identity and Key Vault settings are NOT here -- they differ per
+#     environment and live in iac/envs/*.tfvars, so that TEST cannot silently
+#     run as the production service principal.
 
 trigger:
   branches:
@@ -164,7 +166,15 @@ stages:
   - stage: DeployTest
     displayName: 'Deploy TEST'
     dependsOn: Validate
-    condition: and(succeeded(), ne('${{ parameters.skipInfra }}', 'true'))
+    # PR builds run Validate only. A pull request must not apply Terraform:
+    # two PRs (or a PR and a develop build) would race on the same TEST state
+    # file and the same capacity, and PR branches are unreviewed by definition.
+    condition: |
+      and(
+        succeeded(),
+        ne('${{ parameters.skipInfra }}', 'true'),
+        ne(variables['Build.Reason'], 'PullRequest')
+      )
     jobs:
       - job: Apply
         displayName: 'terraform apply (test)'
@@ -203,11 +213,7 @@ stages:
                   -backend-config="storage_account_name=$(TF_BACKEND_SA)" \
                   -backend-config="container_name=$(TF_BACKEND_CONTAINER)"
 
-                terraform apply -auto-approve \
-                  -var-file=envs/test.tfvars \
-                  -var="azure_client_id=$(FunctionSpnClientId)" \
-                  -var="function_spn_object_id=$(FunctionSpnObjectId)" \
-                  -var="key_vault_name=$(KeyVaultNameNonProd)"
+                terraform apply -auto-approve -var-file=envs/test.tfvars
 
                 terraform output -json > "$(Build.ArtifactStagingDirectory)/tf-output.json"
 
@@ -252,7 +258,9 @@ stages:
   - stage: PauseTestCapacity
     displayName: 'Pause test capacity'
     dependsOn: DeployTest
-    condition: always()
+    # always(), so a failed test run still leaves the capacity paused -- but not
+    # for PR builds, which never started it.
+    condition: and(always(), ne(variables['Build.Reason'], 'PullRequest'))
     jobs:
       - job: Pause
         displayName: 'Pause the F2 so it costs nothing idle'
@@ -350,11 +358,7 @@ stages:
                       export ARM_TENANT_ID="$tenantId"
                       export ARM_SUBSCRIPTION_ID="$(subscriptionId)"
 
-                      terraform plan -out=prod.tfplan \
-                        -var-file=envs/prod.tfvars \
-                        -var="azure_client_id=$(FunctionSpnClientId)" \
-                        -var="function_spn_object_id=$(FunctionSpnObjectId)" \
-                        -var="key_vault_name=$(KeyVaultNameProd)"
+                      terraform plan -out=prod.tfplan -var-file=envs/prod.tfvars
 
                       terraform show -no-color prod.tfplan \
                         > "$(Build.ArtifactStagingDirectory)/prod-plan.txt"

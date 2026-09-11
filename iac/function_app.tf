@@ -191,6 +191,28 @@ resource "null_resource" "function_deploy" {
         --src ${data.archive_file.function_zip.output_path} `
         --build-remote true 2>&1 | Out-Host
 
+      # The zip deploy re-injects connection-string settings that conflict with
+      # identity-based host storage. With both AzureWebJobsStorage (a connection
+      # string) and AzureWebJobsStorage__accountName present, the host reports
+      #   azure.functions.webjobs.storage: Unhealthy, AuthenticationFailed
+      # and is recycled on a loop, killing long-running invocations mid-flight.
+      #
+      # Terraform never declares these, so removing them converges the app on
+      # the declared state rather than leaving whatever the CLI last wrote.
+      $injected = az functionapp config appsettings list `
+        --resource-group ${azurerm_resource_group.this.name} `
+        --name ${var.function_app_name} `
+        --query "[?name=='AzureWebJobsStorage' || name=='DEPLOYMENT_STORAGE_CONNECTION_STRING'].name" `
+        -o tsv 2>$null
+
+      if ($injected) {
+        Write-Host "Removing injected settings: $($injected -join ', ')"
+        az functionapp config appsettings delete `
+          --resource-group ${azurerm_resource_group.this.name} `
+          --name ${var.function_app_name} `
+          --setting-names $injected 2>&1 | Out-Host
+      }
+
       # The CLI's post-deploy host key check sporadically exits 1 even when the
       # zip deploy succeeded. Verify registration instead of trusting the code.
       Start-Sleep -Seconds 30

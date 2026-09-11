@@ -29,8 +29,11 @@ healthcheck_workspace_id = ""
 key_vault_name           = "kvfabricprodeus2rh"
 key_vault_resource_group = "fabric-rg"
 spn_secret_name          = "spn-secret"
-azure_client_id          = "__SET_IN_PIPELINE__"
-azure_tenant_id          = "35acf02c-4b87-4ae6-9221-ff5cafd430b4"
+azure_client_id          = "15a84224-c1e2-45e0-a2f5-fc8f5206f81d"
+
+# Object (principal) ID of the same principal, used for its role assignments.
+function_spn_object_id = "557fcf74-476a-4139-8d37-fb6b81cc4b92"
+azure_tenant_id        = "35acf02c-4b87-4ae6-9221-ff5cafd430b4"
 
 # No Terraform-owned capacity in prod: the capacities being paused are owned by
 # the platform team in fabric-rg, not by this stack.
