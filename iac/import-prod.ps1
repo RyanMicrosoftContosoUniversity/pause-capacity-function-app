@@ -39,8 +39,12 @@ $imports = [ordered]@{
     "azurerm_storage_account.func" =
         "$rgScope/providers/Microsoft.Storage/storageAccounts/fabricpausecapacitiesapp"
 
+    # serverFarms is case-sensitive here. Azure and the CLI both emit
+    # "serverfarms", but the provider's ID parser matches the segment literally
+    # and rejects the lowercase form with "the segment at position 6 didn't
+    # match".
     "azurerm_service_plan.func" =
-        "$rgScope/providers/Microsoft.Web/serverfarms/ASP-fabricpausecapacitiesapp-cb3e"
+        "$rgScope/providers/Microsoft.Web/serverFarms/ASP-fabricpausecapacitiesapp-cb3e"
 
     "azurerm_application_insights.func" =
         "$rgScope/providers/Microsoft.Insights/components/fabric-pause-capacities-flex"
