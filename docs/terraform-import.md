@@ -85,6 +85,23 @@ the failed run's saved plan. Retain the `Fabric-Prod` environment approval.
 Resources already in state are skipped, so the completed parts of the failed
 apply are preserved.
 
+### Deployment storage propagation and stale triggers
+
+Creating an ARM role assignment does not mean the storage data plane accepts
+the managed identity immediately. The first production zip deployment in build
+1084 failed with `InaccessibleStorageException` and a storage 403, leaving the
+old `timer_trigger` indexed. The old provisioner ignored the CLI failure and
+accepted any registered function.
+
+`scripts/deploy_function.ps1` now retries that specific storage-access failure
+(at most ten deployment attempts, sixty seconds apart). Other deployment
+failures are fatal. After a successful deploy, it waits up to twenty indexing
+queries, fifteen seconds apart, for **both** `pause_capacities` and
+`resume_capacities`; an old `timer_trigger` is never accepted as success.
+Terraform waits for all declared runtime RBAC assignments before deployment.
+The deployment script's hash is included in the resource triggers, so changing
+the deployment logic also replaces an earlier falsely successful deployment.
+
 ## What the first plan is expected to show
 
 These are intentional changes, not import errors:

@@ -192,3 +192,73 @@ function terraform {{
             "/resourceGroups/fabric-rg/providers/Microsoft.Authorization/roleAssignments/"
             "3996eb6a-409e-4bc0-8a64-bbf3e55ab504"
         )
+
+
+DEPLOY_MOCK = r"""
+$global:deployCalls = 0
+$global:listCalls = 0
+function Start-Sleep {}
+function az {
+    $global:LASTEXITCODE = 0
+    if ($args[1] -eq 'deployment') {
+        $global:deployCalls++
+        if ($mode -eq 'storage-failure' -or
+            ($mode -eq 'storage-retry' -and $global:deployCalls -eq 1)) {
+            $global:LASTEXITCODE = 1
+            return 'InaccessibleStorageException: storage 403'
+        }
+        if ($mode -eq 'build-failure') {
+            $global:LASTEXITCODE = 1
+            return 'Remote build failed'
+        }
+        return
+    }
+    if ($args[1] -ne 'function') { throw "Unexpected az call: $args" }
+    $global:listCalls++
+    if ($mode -eq 'list-failure') {
+        $global:LASTEXITCODE = 1
+        return
+    }
+    if ($mode -eq 'stale' -or
+        ($mode -eq 'indexing-delay' -and $global:listCalls -eq 1)) {
+        return 'my-app/timer_trigger'
+    }
+    return @('my-app/pause_capacities', 'my-app/resume_capacities')
+}
+"""
+
+
+@pytest.mark.parametrize(
+    ("mode", "deploy_count", "list_count", "error"),
+    [
+        ("success", 1, 1, None),
+        ("storage-retry", 2, 1, None),
+        ("indexing-delay", 1, 2, None),
+        ("storage-failure", 3, 0, "Zip deployment failed"),
+        ("build-failure", 1, 0, "Zip deployment failed"),
+        ("list-failure", 1, 1, "Cannot query registered functions"),
+        ("stale", 1, 3, "missing pause_capacities, resume_capacities"),
+    ],
+)
+def test_deploy_requires_success_and_expected_triggers(mode, deploy_count, list_count, error):
+    path = str(ROOT / "scripts" / "deploy_function.ps1").replace("'", "''")
+    result = run_powershell(
+        f"$ErrorActionPreference = 'Stop'; $mode = '{mode}';\n"
+        + DEPLOY_MOCK
+        + f"""
+try {{
+    & '{path}' -ResourceGroup rg -AppName my-app -ZipPath function.zip `
+        -MaxDeploymentAttempts 3 -RetryDelaySeconds 0 `
+        -MaxRegistrationAttempts 3 -RegistrationDelaySeconds 0
+}} finally {{
+    'COUNTS:' + $global:deployCalls + ',' + $global:listCalls
+}}
+"""
+    )
+    counts = next(line for line in result.stdout.splitlines() if line.startswith("COUNTS:"))
+    assert counts == f"COUNTS:{deploy_count},{list_count}"
+    if error:
+        assert result.returncode != 0
+        assert error in result.stderr
+    else:
+        assert result.returncode == 0, result.stdout + result.stderr
