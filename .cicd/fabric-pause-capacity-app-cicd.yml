@@ -30,6 +30,9 @@
 #     Identity and Key Vault settings are NOT here -- they differ per
 #     environment and live in iac/envs/*.tfvars, so that TEST cannot silently
 #     run as the production service principal.
+#   - Run iac/bootstrap-prod-rbac.ps1 as an RBAC administrator before the first
+#     PROD apply. Contributor on fabric-sc-prod cannot create role assignments.
+#     See docs/terraform-import.md; the pipeline must not grant itself access.
 
 trigger:
   branches:
