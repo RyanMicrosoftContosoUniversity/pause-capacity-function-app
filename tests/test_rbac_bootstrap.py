@@ -57,8 +57,14 @@ function az {
 
 
 def run_powershell(script):
+    # Assert the exception message, not PowerShell's host-dependent line wrapping.
+    wrapped = (
+        "$ErrorActionPreference = 'Stop'\ntry {\n"
+        + script
+        + "\n} catch {\n[Console]::Error.WriteLine($_.Exception.Message)\nexit 1\n}"
+    )
     return subprocess.run(
-        [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
+        [PWSH, "-NoProfile", "-NonInteractive", "-Command", wrapped],
         capture_output=True,
         text=True,
         timeout=30,
