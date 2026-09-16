@@ -167,7 +167,8 @@ def test_prod_import_adopts_existing_contributor_assignment(already_imported):
     if already_imported:
         state.append(address)
     state_json = json.dumps(state)
-    result = run_powershell(f"""
+    result = run_powershell(
+        f"""
 $ErrorActionPreference = 'Stop'
 $global:imports = @()
 $global:state = '{state_json}' | ConvertFrom-Json
@@ -179,7 +180,8 @@ function terraform {{
 }}
 & '{path}'
 'CALLS:' + (ConvertTo-Json -InputObject @($global:imports) -Depth 5 -Compress)
-""")
+"""
+    )
     imported = calls(result)
     if already_imported:
         assert imported == []
