@@ -203,9 +203,40 @@ function terraform {{
 DEPLOY_MOCK = r"""
 $global:deployCalls = 0
 $global:listCalls = 0
+$global:cleanupDeletes = 0
 function Start-Sleep {}
 function az {
     $global:LASTEXITCODE = 0
+    if ($args[0] -eq 'rest') {
+        if ($global:cleanupDeletes -ne 1) { throw 'Trigger sync ran before storage cleanup.' }
+        if ($mode -eq 'sync-failure') {
+            $global:LASTEXITCODE = 1
+            return 'Host still unavailable'
+        }
+        return
+    }
+    if ($args[1] -eq 'show') {
+        return '/subscriptions/sub/resourceGroups/rg/providers/Microsoft.Web/sites/my-app'
+    }
+    if ($args[1] -eq 'config') {
+        if ($args[3] -eq 'list') {
+            if ($mode -eq 'cleanup-read-failure') {
+                $global:LASTEXITCODE = 1
+                return
+            }
+            return @('AzureWebJobsStorage', 'DEPLOYMENT_STORAGE_CONNECTION_STRING')
+        }
+        if ($args[3] -ne 'delete') { throw "Unexpected config call: $args" }
+        if ($args -notcontains '--output' -or $args -notcontains 'none') {
+            throw 'Cleanup must not print app-setting values.'
+        }
+        if ($mode -eq 'cleanup-delete-failure') {
+            $global:LASTEXITCODE = 1
+            return
+        }
+        $global:cleanupDeletes++
+        return
+    }
     if ($args[1] -eq 'deployment') {
         $global:deployCalls++
         if ($mode -eq 'storage-failure' -or
@@ -217,6 +248,10 @@ function az {
             $global:LASTEXITCODE = 1
             return 'Remote build failed'
         }
+        if ($mode -in @('host-warning', 'host-warning-stale')) {
+            $global:LASTEXITCODE = 1
+            return 'Deployment was successful but the app appears to be unhealthy.'
+        }
         return
     }
     if ($args[1] -ne 'function') { throw "Unexpected az call: $args" }
@@ -225,7 +260,7 @@ function az {
         $global:LASTEXITCODE = 1
         return
     }
-    if ($mode -eq 'stale' -or
+    if ($mode -in @('stale', 'host-warning-stale') -or
         ($mode -eq 'indexing-delay' -and $global:listCalls -eq 1)) {
         return 'my-app/timer_trigger'
     }
@@ -244,6 +279,11 @@ function az {
         ("build-failure", 1, 0, "Zip deployment failed"),
         ("list-failure", 1, 1, "Cannot query registered functions"),
         ("stale", 1, 3, "missing pause_capacities, resume_capacities"),
+        ("host-warning", 1, 1, None),
+        ("host-warning-stale", 1, 3, "missing pause_capacities, resume_capacities"),
+        ("sync-failure", 1, 0, "sync exit 1"),
+        ("cleanup-read-failure", 1, 0, "Cannot inspect injected storage settings"),
+        ("cleanup-delete-failure", 1, 0, "Cannot remove injected storage settings"),
     ],
 )
 def test_deploy_requires_success_and_expected_triggers(mode, deploy_count, list_count, error):

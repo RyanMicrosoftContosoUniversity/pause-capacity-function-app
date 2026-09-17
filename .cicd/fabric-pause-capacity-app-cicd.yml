@@ -47,6 +47,7 @@ trigger:
       - iac/**
       - tests/**
       - scripts/deploy_function.ps1
+      - scripts/remove_injected_storage_settings.ps1
       - .cicd/fabric-pause-capacity-app-cicd.yml
 
 pr:
@@ -60,6 +61,7 @@ pr:
       - iac/**
       - tests/**
       - scripts/deploy_function.ps1
+      - scripts/remove_injected_storage_settings.ps1
 
 parameters:
   - name: skipInfra

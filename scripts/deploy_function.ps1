@@ -33,6 +33,14 @@ for ($attempt = 1; $attempt -le $MaxDeploymentAttempts; $attempt++) {
         break
     }
 
+    # This specific CLI diagnostic occurs after a successful package deploy,
+    # not a failed build/upload. Cleanup and an explicit successful trigger
+    # sync below are still required; existing function names alone never suffice.
+    if ($details.Contains("Deployment was successful but the app appears to be unhealthy.")) {
+        Write-Warning "Package deployed; recovering host storage before verifying trigger synchronization."
+        break
+    }
+
     # The ARM role assignment can exist before the storage data plane accepts
     # the managed identity. Retry only this observed deployment failure.
     if ($details -notmatch 'InaccessibleStorageException' -or
@@ -43,20 +51,39 @@ for ($attempt = 1; $attempt -le $MaxDeploymentAttempts; $attempt++) {
     Start-Sleep -Seconds $RetryDelaySeconds
 }
 
+& "$PSScriptRoot/remove_injected_storage_settings.ps1" `
+    -ResourceGroup $ResourceGroup -AppName $AppName
+
+$appId = az functionapp show --resource-group $ResourceGroup --name $AppName --query id -o tsv
+if ($LASTEXITCODE -ne 0 -or -not $appId) {
+    throw "Cannot resolve the resource ID of $AppName."
+}
+
 $expected = @("pause_capacities", "resume_capacities")
+$registered = @()
+$missing = $expected
+$syncExitCode = 1
 for ($attempt = 1; $attempt -le $MaxRegistrationAttempts; $attempt++) {
-    $registered = @(az functionapp function list `
-        --resource-group $ResourceGroup `
-        --name $AppName `
-        --query "[].name" -o tsv)
-    if ($LASTEXITCODE -ne 0) {
-        throw "Cannot query registered functions for $AppName."
-    }
-    $names = @($registered | ForEach-Object { ($_ -split '/')[-1] })
-    $missing = @($expected | Where-Object { $names -cnotcontains $_ })
-    if ($missing.Count -eq 0) {
-        Write-Host "Deployed functions: $($registered -join ', ')"
-        return
+    $syncOutput = @(az rest --method post `
+        --uri "$appId/syncfunctiontriggers?api-version=2024-04-01" `
+        --output none 2>&1)
+    $syncExitCode = $LASTEXITCODE
+    if ($syncExitCode -eq 0) {
+        $registered = @(az functionapp function list `
+            --resource-group $ResourceGroup `
+            --name $AppName `
+            --query "[].name" -o tsv)
+        if ($LASTEXITCODE -ne 0) {
+            throw "Cannot query registered functions for $AppName."
+        }
+        $names = @($registered | ForEach-Object { ($_ -split '/')[-1] })
+        $missing = @($expected | Where-Object { $names -cnotcontains $_ })
+        if ($missing.Count -eq 0) {
+            Write-Host "Deployed functions: $($registered -join ', ')"
+            return
+        }
+    } else {
+        Write-Warning "Trigger synchronization is not ready: $($syncOutput -join ' ')"
     }
     if ($attempt -lt $MaxRegistrationAttempts) {
         Write-Host "Waiting for function indexing: $($missing -join ', ')."
@@ -64,4 +91,4 @@ for ($attempt = 1; $attempt -le $MaxRegistrationAttempts; $attempt++) {
     }
 }
 
-throw "Deployment verification failed for ${AppName}: missing $($missing -join ', '); indexed: $($registered -join ', ')."
+throw "Deployment verification failed for ${AppName}: sync exit $syncExitCode; missing $($missing -join ', '); indexed: $($registered -join ', ')."

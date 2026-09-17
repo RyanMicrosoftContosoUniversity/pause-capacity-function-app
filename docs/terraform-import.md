@@ -95,12 +95,20 @@ accepted any registered function.
 
 `scripts/deploy_function.ps1` now retries that specific storage-access failure
 (at most ten deployment attempts, sixty seconds apart). Other deployment
-failures are fatal. After a successful deploy, it waits up to twenty indexing
-queries, fifteen seconds apart, for **both** `pause_capacities` and
+failures are fatal, except for the CLI's specific "Deployment was successful
+but the app appears to be unhealthy" diagnostic. That diagnostic is not
+accepted as success: the script first removes platform-injected host storage
+connection strings, then requires a successful explicit trigger sync and
+**both** expected functions. Cleanup failures remain fatal and do not print
+app-setting values.
+
+After package deployment and storage cleanup, it makes up to twenty trigger
+sync/indexing attempts, fifteen seconds apart, for **both** `pause_capacities` and
 `resume_capacities`; an old `timer_trigger` is never accepted as success.
 Terraform waits for all declared runtime RBAC assignments before deployment.
-The deployment script's hash is included in the resource triggers, so changing
-the deployment logic also replaces an earlier falsely successful deployment.
+Both deployment and cleanup script hashes are included in the resource triggers,
+so changing deployment logic also replaces an earlier falsely successful
+deployment. Cleanup still runs on every apply, including app-only updates.
 
 ## What the first plan is expected to show
 
