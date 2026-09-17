@@ -10,6 +10,47 @@ Run it once. It is idempotent, so leaving it wired into the pipeline behind the
 
 ## Procedure
 
+### Bootstrap the deployment identity's RBAC permissions
+
+The `fabric-sc-prod` service connection is a different principal from both the
+Function App's managed identity and the runtime Fabric SPN. Its **Contributor**
+role can update resources but cannot perform
+`Microsoft.Authorization/roleAssignments/write`. This caused build 1074's
+production apply to fail on September 14, 2026; the storage deprecation warnings
+were not the cause.
+
+Before applying, an administrator with role-assignment write permission at the
+following scopes must run:
+
+```powershell
+.\iac\bootstrap-prod-rbac.ps1 -WhatIf
+.\iac\bootstrap-prod-rbac.ps1
+```
+
+The script adds **Role Based Access Control Administrator**, with conditions on
+both create and delete, to the production deployment principal:
+
+| Scope | Allowed roles | Allowed recipient |
+|---|---|---|
+| Storage account `fabricpausecapacitiesapp` | Storage Blob Data Owner, Storage Queue Data Contributor, Storage Table Data Contributor | Production app's current managed identity |
+| Key Vault `kvfabricprodeus2rh` | Key Vault Secrets User | Production app's current managed identity |
+| Resource group `fabric-rg` | Contributor | Production runtime SPN |
+
+No subscription-wide administrative role is granted, and the deployer cannot
+delegate administrative roles through these grants. See Microsoft's
+[conditional delegation guidance](https://learn.microsoft.com/en-us/azure/role-based-access-control/delegate-role-assignments-overview).
+Existing broader permissions are not removed by this bootstrap.
+
+This is an **administrator bootstrap**, not a pipeline step or a resource in
+the application's Terraform state: the deployer must not grant itself access.
+Existing matching grants are skipped; different conditions fail for manual
+review instead of silently widening permissions. If an identity is replaced,
+review the old grants and rerun with the new deployer/runtime object IDs; the
+app's managed identity is resolved live. Keep the runtime SPN parameter aligned
+with `function_spn_object_id` in `iac/envs/prod.tfvars`.
+
+### Import and deploy
+
 ```powershell
 cd iac
 
@@ -31,6 +72,43 @@ terraform plan -var-file=envs/prod.tfvars `
 
 **Read the plan before applying.** Import only records that a resource exists; it
 does not reconcile configuration. The first plan will therefore show real diffs.
+
+The importer also adopts the existing runtime SPN's Contributor assignment on
+`fabric-rg`, using its actual Azure assignment ID. Without this import, fixing
+the authorization error would expose a `RoleAssignmentExists` conflict.
+
+After a partially failed apply, keep the remote state and rerun the pipeline
+with `deployProd=true`, `importProd=true`, `skipInfra=false`, and
+`skipIntegration=false` on `main` or a `release/*` branch. A fresh run obtains
+new credentials after RBAC propagation and produces a fresh plan; do not reuse
+the failed run's saved plan. Retain the `Fabric-Prod` environment approval.
+Resources already in state are skipped, so the completed parts of the failed
+apply are preserved.
+
+### Deployment storage propagation and stale triggers
+
+Creating an ARM role assignment does not mean the storage data plane accepts
+the managed identity immediately. The first production zip deployment in build
+1084 failed with `InaccessibleStorageException` and a storage 403, leaving the
+old `timer_trigger` indexed. The old provisioner ignored the CLI failure and
+accepted any registered function.
+
+`scripts/deploy_function.ps1` now retries that specific storage-access failure
+(at most ten deployment attempts, sixty seconds apart). Other deployment
+failures are fatal, except for the CLI's specific "Deployment was successful
+but the app appears to be unhealthy" diagnostic. That diagnostic is not
+accepted as success: the script first removes platform-injected host storage
+connection strings, then requires a successful explicit trigger sync and
+**both** expected functions. Cleanup failures remain fatal and do not print
+app-setting values.
+
+After package deployment and storage cleanup, it makes up to twenty trigger
+sync/indexing attempts, fifteen seconds apart, for **both** `pause_capacities` and
+`resume_capacities`; an old `timer_trigger` is never accepted as success.
+Terraform waits for all declared runtime RBAC assignments before deployment.
+Both deployment and cleanup script hashes are included in the resource triggers,
+so changing deployment logic also replaces an earlier falsely successful
+deployment. Cleanup still runs on every apply, including app-only updates.
 
 ## What the first plan is expected to show
 

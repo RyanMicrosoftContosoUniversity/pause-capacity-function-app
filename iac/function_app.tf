@@ -178,33 +178,19 @@ resource "azurerm_function_app_flex_consumption" "func" {
 
 resource "null_resource" "function_deploy" {
   triggers = {
-    zip_sha256      = data.archive_file.function_zip.output_sha256
-    function_app_id = azurerm_function_app_flex_consumption.func.id
+    zip_sha256            = data.archive_file.function_zip.output_sha256
+    function_app_id       = azurerm_function_app_flex_consumption.func.id
+    deploy_script_sha256  = filesha256("${path.module}/../scripts/deploy_function.ps1")
+    cleanup_script_sha256 = filesha256("${path.module}/../scripts/remove_injected_storage_settings.ps1")
   }
 
   provisioner "local-exec" {
     interpreter = ["pwsh", "-NoProfile", "-Command"]
     command     = <<-EOT
-      $ErrorActionPreference = 'Continue'
-      az functionapp deployment source config-zip `
-        --resource-group ${azurerm_resource_group.this.name} `
-        --name ${var.function_app_name} `
-        --src ${data.archive_file.function_zip.output_path} `
-        --build-remote true 2>&1 | Out-Host
-
-      # The CLI's post-deploy host key check sporadically exits 1 even when the
-      # zip deploy succeeded. Verify registration instead of trusting the code.
-      Start-Sleep -Seconds 30
-      $fns = az functionapp function list `
-        --resource-group ${azurerm_resource_group.this.name} `
-        --name ${var.function_app_name} `
-        --query "[].name" -o tsv 2>$null
-
-      if (-not $fns) {
-        Write-Error "Deploy verification failed: no functions registered on ${var.function_app_name}"
-        exit 1
-      }
-      Write-Host "Deployed functions: $fns"
+      & '${path.module}/../scripts/deploy_function.ps1' `
+        -ResourceGroup '${azurerm_resource_group.this.name}' `
+        -AppName '${var.function_app_name}' `
+        -ZipPath '${data.archive_file.function_zip.output_path}'
     EOT
   }
 
@@ -212,6 +198,9 @@ resource "null_resource" "function_deploy" {
     azurerm_function_app_flex_consumption.func,
     azurerm_storage_blob.function_zip,
     azurerm_role_assignment.func_storage_blob,
+    azurerm_role_assignment.func_storage_queue,
+    azurerm_role_assignment.func_storage_table,
+    azurerm_role_assignment.func_kv_secrets,
   ]
 }
 
@@ -243,24 +232,10 @@ resource "null_resource" "strip_injected_storage_settings" {
   provisioner "local-exec" {
     interpreter = ["pwsh", "-NoProfile", "-Command"]
     command     = <<-EOT
-      $ErrorActionPreference = 'Continue'
-
-      $injected = az functionapp config appsettings list `
-        --resource-group ${azurerm_resource_group.this.name} `
-        --name ${var.function_app_name} `
-        --query "[?name=='AzureWebJobsStorage' || name=='DEPLOYMENT_STORAGE_CONNECTION_STRING'].name" `
-        -o tsv 2>$null
-
-      if (-not $injected) {
-        Write-Host "No injected storage settings present."
-        exit 0
-      }
-
-      Write-Host "Removing injected settings: $($injected -join ', ')"
-      az functionapp config appsettings delete `
-        --resource-group ${azurerm_resource_group.this.name} `
-        --name ${var.function_app_name} `
-        --setting-names $injected 2>&1 | Out-Host
+      $ErrorActionPreference = 'Stop'
+      & '${path.module}/../scripts/remove_injected_storage_settings.ps1' `
+        -ResourceGroup '${azurerm_resource_group.this.name}' `
+        -AppName '${var.function_app_name}'
 
       # Deleting settings restarts the app; give the host time to come back on
       # the identity path before anything downstream calls it.

@@ -51,6 +51,12 @@ $imports = [ordered]@{
 
     "azurerm_function_app_flex_consumption.func" =
         "$rgScope/providers/Microsoft.Web/sites/fabric-pause-capacities-flex"
+
+    # The runtime SPN already has Contributor on fabric-rg. Adopt that exact
+    # assignment: creating another UUID for the same scope/role/principal
+    # fails with RoleAssignmentExists once the deployer has RBAC permissions.
+    "azurerm_role_assignment.spn_capacity_contributor[0]" =
+        "/subscriptions/$SubscriptionId/resourceGroups/fabric-rg/providers/Microsoft.Authorization/roleAssignments/3996eb6a-409e-4bc0-8a64-bbf3e55ab504"
 }
 
 $state = @(terraform state list 2>$null)
