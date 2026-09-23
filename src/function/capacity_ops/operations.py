@@ -1,10 +1,13 @@
 """What a pause or resume run actually does, across every capacity.
 
-Both operations iterate *every* capacity in the resource group and swallow
-per-capacity failures, so one bad capacity cannot leave the rest running
-overnight or stop the rest from coming back in the morning. They return the
-tally as well as logging it, so callers and tests can inspect the outcome
-without scraping log records.
+Pause iterates *every* capacity in the resource group. Resume iterates them all
+too but acts only on ``config.RESUME_CAPACITIES``, so the set that comes back in
+the morning is a deliberate subset of the set that gets paused at night.
+
+Both operations swallow per-capacity failures, so one bad capacity cannot leave
+the rest running overnight or stop the rest from coming back in the morning.
+They return the tally as well as logging it, so callers and tests can inspect
+the outcome without scraping log records.
 """
 
 import logging
@@ -20,6 +23,10 @@ class Result:
         self.succeeded = []
         self.skipped = []
         self.failed = []
+        # Resume only: capacities the allow-list kept us from touching. Kept
+        # separate from `skipped` so "left paused on purpose" is never confused
+        # with "was already in the desired state".
+        self.excluded = []
 
 
 def pause_all(spn) -> Result:
@@ -51,12 +58,26 @@ def pause_all(spn) -> Result:
 
 
 def resume_all(spn) -> Result:
-    logging.info("Resume trigger started for resource group %s", config.RESOURCE_GROUP)
+    """Resume only the capacities named in ``config.RESUME_CAPACITIES``.
+
+    Every other capacity in the resource group is enumerated and deliberately
+    left paused -- pause still sweeps them all, so anything off the list simply
+    stops coming back in the morning.
+    """
+    logging.info(
+        "Resume trigger started for resource group %s, allow-list %s",
+        config.RESOURCE_GROUP,
+        config.RESUME_CAPACITIES or "(empty: nothing will be resumed)",
+    )
     requested_at = datetime.now(UTC)
     result = Result()
 
     for capacity_client in capacity.iter_capacity_clients(spn):
         name = capacity_client.capacity_name
+        if name not in config.RESUME_CAPACITIES:
+            logging.info("Capacity %s is not on the resume allow-list; leaving it paused", name)
+            result.excluded.append(name)
+            continue
         try:
             if capacity.capacity_state(capacity_client) == "Active":
                 logging.info("Capacity %s already active", name)
@@ -81,9 +102,10 @@ def resume_all(spn) -> Result:
 
     airflow_ready_at = healthcheck.airflow_health_check(spn)
     logging.info(
-        "Resume complete. resumed=%s skipped=%s failed=%s airflow_ready_at=%s",
+        "Resume complete. resumed=%s skipped=%s excluded=%s failed=%s airflow_ready_at=%s",
         result.succeeded,
         result.skipped,
+        result.excluded,
         result.failed,
         airflow_ready_at.isoformat() if airflow_ready_at else "not-verified",
     )

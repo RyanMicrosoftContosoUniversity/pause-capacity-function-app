@@ -38,11 +38,35 @@ never be taken down by the capacity being paused. Two timer triggers:
 
 | Function | Schedule (NCRONTAB, 6-field) | Action |
 |---|---|---|
-| `pause_capacities` | `0 0 23 * * *` | Pauses every capacity in `FABRIC_RESOURCE_GROUP` |
-| `resume_capacities` | `0 0 8 * * *` | Resumes them, waits for `Active`, optionally health-checks Airflow |
+| `pause_capacities` | `0 0 23 * * *` | Every night at 23:00 — pauses every capacity in `FABRIC_RESOURCE_GROUP` |
+| `resume_capacities` | `0 0 8 * * 1-5` | Mon–Fri at 08:00 — resumes only the capacities in `RESUME_CAPACITIES`, waits for `Active`, optionally health-checks Airflow |
 
-Both act on **every capacity in `FABRIC_RESOURCE_GROUP`**. That variable is the
+Pause acts on **every capacity in `FABRIC_RESOURCE_GROUP`**. That variable is the
 app's entire blast radius — it is the single most important setting here.
+
+Resume is deliberately narrower. `RESUME_CAPACITIES` (Terraform variable
+`resume_capacities`, `uswest3capacity` in prod) is a comma-separated allow-list;
+anything omitted is still paused nightly and stays paused until someone resumes
+it by hand. An empty list resumes nothing, which is the intended fail-safe
+direction — a typo costs a manual resume rather than a day of F-SKU spend.
+
+The two schedules are also asymmetric in *days*, on purpose. Pause runs seven
+days a week so a capacity resumed by hand on a Saturday cannot bill through to
+Monday; resume is weekdays only, so a weekend capacity has to be started
+deliberately.
+
+### Timezone
+
+Both schedules are evaluated in `WEBSITE_TIME_ZONE` (Terraform variable
+`website_time_zone`), set to **`America/New_York`**. `08:00` therefore means
+08:00 Eastern, and stays at 08:00 local across the DST boundary.
+
+> This is a **Linux** Flex Consumption app, so the value must be a tz-database
+> name. The Windows ID `Eastern Standard Time` is accepted without complaint and
+> then ignored, leaving the host on UTC — which is how the resume once ran at
+> 04:00 Eastern and started every capacity in the group hours before anyone was
+> awake to notice. A `validation` block on the variable now rejects any value
+> without a `/` in it.
 
 ## Repository layout
 

@@ -163,6 +163,10 @@ resource "azurerm_function_app_flex_consumption" "func" {
 
     HEALTHCHECK_WORKSPACE_ID    = var.healthcheck_workspace_id
     RESUME_POLL_TIMEOUT_SECONDS = tostring(var.resume_poll_timeout_seconds)
+
+    # Resume allow-list. Pause is unscoped by design, so this is the only thing
+    # standing between a capacity and an unattended day of F-SKU spend.
+    RESUME_CAPACITIES = join(",", var.resume_capacities)
   }
 
   site_config {

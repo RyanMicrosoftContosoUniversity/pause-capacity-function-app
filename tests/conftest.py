@@ -64,6 +64,7 @@ def config(monkeypatch):
     from capacity_ops import config as module
 
     monkeypatch.setattr(module, "RESOURCE_GROUP", "test-capacity-pause-app-rg")
+    monkeypatch.setattr(module, "RESUME_CAPACITIES", ["fabpausetestcap"])
     monkeypatch.setenv("SUBSCRIPTION_ID", "00000000-0000-0000-0000-000000000000")
     monkeypatch.setattr(time, "sleep", lambda _seconds: None)
     return module

@@ -19,9 +19,17 @@ application_insights_name = "fabric-pause-capacities-flex"
 # Production capacities live in a different resource group from the app that
 # manages them. This is the real blast radius.
 fabric_resource_group = "fabric-rg"
-website_time_zone     = "UTC"
+
+# Linux Flex Consumption: tz-database name, NOT the Windows "Eastern Standard
+# Time" ID. Resume is 08:00 and pause 23:00 in this zone, and America/New_York
+# keeps both at their local hour across the DST boundary.
+website_time_zone = "America/New_York"
 
 resume_poll_timeout_seconds = 900
+
+# Only this capacity is restarted in the morning. Pause still sweeps all of
+# fabric-rg, so every other capacity there stays paused until resumed by hand.
+resume_capacities = ["uswest3capacity"]
 
 # Set to the Fabric workspace whose Airflow jobs gate the morning DAG run.
 healthcheck_workspace_id = ""
