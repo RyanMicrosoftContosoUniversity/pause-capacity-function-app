@@ -12,6 +12,22 @@ import os
 
 RESOURCE_GROUP = os.getenv("FABRIC_RESOURCE_GROUP", "fabric-rg")
 
+
+def _parse_capacity_list(raw):
+    return [name.strip() for name in raw.split(",") if name.strip()]
+
+
+# Capacities the morning resume is allowed to start, as a comma-separated list.
+#
+# Pause deliberately has no equivalent: it must keep sweeping the whole resource
+# group so a capacity that is not on this list can never be left billing. The
+# asymmetry is the point -- anything omitted here is paused nightly and stays
+# paused until someone resumes it by hand.
+#
+# An empty value resumes nothing. That is the fail-safe direction: a typo or a
+# cleared setting costs a manual resume, not an unattended day of F-SKU spend.
+RESUME_CAPACITIES = _parse_capacity_list(os.getenv("RESUME_CAPACITIES", "uswest3capacity"))
+
 # How long to wait for a resumed capacity to report Active.
 RESUME_POLL_TIMEOUT_SECONDS = int(os.getenv("RESUME_POLL_TIMEOUT_SECONDS", "900"))
 RESUME_POLL_INTERVAL_SECONDS = int(os.getenv("RESUME_POLL_INTERVAL_SECONDS", "20"))

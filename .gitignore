@@ -3,6 +3,9 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+# junk
+report.20260917.115923.169484.0.001.json
+
 # C extensions
 *.so
 

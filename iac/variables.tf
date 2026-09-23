@@ -85,8 +85,21 @@ variable "fabric_resource_group" {
 
 variable "website_time_zone" {
   type        = string
-  description = "Timezone the NCRONTAB schedules are evaluated in. Pause and resume must agree."
+  description = <<-EOT
+    Timezone the NCRONTAB schedules are evaluated in. Pause and resume must
+    agree. This is a Linux Flex Consumption app, so the value must be a
+    tz-database name ("America/New_York"), not a Windows timezone ID
+    ("Eastern Standard Time") -- the latter is ignored on Linux and silently
+    leaves the schedules on UTC.
+  EOT
   default     = "UTC"
+
+  validation {
+    # A Windows timezone ID has no slash. Catching it here is cheap; catching
+    # it in production means discovering the schedule ran four hours early.
+    condition     = var.website_time_zone == "UTC" || can(regex("^[A-Za-z_]+/[A-Za-z_+-]", var.website_time_zone))
+    error_message = "website_time_zone must be UTC or a tz-database name such as America/New_York (Linux does not accept Windows timezone IDs)."
+  }
 }
 
 variable "healthcheck_workspace_id" {
@@ -99,6 +112,16 @@ variable "resume_poll_timeout_seconds" {
   type        = number
   description = "How long resume waits for a capacity to report Active."
   default     = 900
+}
+
+variable "resume_capacities" {
+  type        = list(string)
+  description = <<-EOT
+    Capacities the morning resume is allowed to start. Pause still sweeps the
+    whole of var.fabric_resource_group, so any capacity left off this list is
+    paused nightly and stays paused. An empty list resumes nothing.
+  EOT
+  default     = ["uswest3capacity"]
 }
 
 # --- Service principal / secrets -------------------------------------------

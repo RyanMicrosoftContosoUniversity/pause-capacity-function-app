@@ -17,10 +17,18 @@ application_insights_name = "appi-fabric-pause-capacities-test"
 
 # The app's blast radius. Identical to resource_group_name on purpose.
 fabric_resource_group = "test-capacity-pause-app-rg"
-website_time_zone     = "UTC"
+
+# Matches prod so the timezone value is exercised here first. The integration
+# tests fire the triggers through the admin API rather than waiting for the
+# schedule, so this does not slow the test run.
+website_time_zone = "America/New_York"
 
 # Keep the test loop short; prod waits the full 15 minutes.
 resume_poll_timeout_seconds = 300
+
+# The test capacity below is the only thing test is allowed to resume; the
+# prod name would not exist in this resource group anyway.
+resume_capacities = ["fabpausetestcap"]
 
 # Airflow health check is a prod concern; there is no Airflow workspace in test.
 healthcheck_workspace_id = ""
